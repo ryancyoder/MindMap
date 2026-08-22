@@ -1,0 +1,14 @@
+{
+	"nodes":[
+		{"id":"a1","type":"text","text":"Brainstorm","x":-260,"y":-180,"width":260,"height":80,"color":"4"},
+		{"id":"a2","type":"text","text":"Pencil gestures","x":120,"y":-300,"width":240,"height":70},
+		{"id":"a3","type":"link","url":"https://jsoncanvas.org","x":120,"y":-140,"width":240,"height":70,"color":"#8b5cf6"},
+		{"id":"a4","type":"group","label":"Later","x":-300,"y":40,"width":700,"height":220,"backgroundStyle":"cover"},
+		{"id":"a5","type":"file","file":"notes/Ideas.md","subpath":"#Open questions","x":-260,"y":90,"width":260,"height":80,"obsidianOnlyKey":{"nested":true}}
+	],
+	"edges":[
+		{"id":"e1","fromNode":"a1","fromSide":"right","toNode":"a2","toSide":"left","label":"how"},
+		{"id":"e2","fromNode":"a1","fromSide":"right","toNode":"a3","toSide":"left","toEnd":"none","color":"3"}
+	],
+	"someFutureTopLevelKey":42
+}

@@ -1,0 +1,63 @@
+:root {
+  --bg: #f6f5f3;
+  --surface: #ffffff;
+  --surface-raised: #ffffff;
+  --border: #d9d5cd;
+  --border-strong: #b4aca0;
+  --text: #23211d;
+  --text-muted: #6f6a61;
+  --accent: #3f6cd4;
+  --accent-soft: rgba(63, 108, 212, 0.14);
+  --ink: #23211d;
+  --grid-dot: rgba(35, 33, 29, 0.16);
+  --danger: #c04a3f;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.07), 0 6px 20px rgba(0, 0, 0, 0.07);
+  --radius: 12px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #16161a;
+    --surface: #202027;
+    --surface-raised: #26262e;
+    --border: #35353f;
+    --border-strong: #4d4d5a;
+    --text: #eceaf0;
+    --text-muted: #9d9aa6;
+    --accent: #7fa0f0;
+    --accent-soft: rgba(127, 160, 240, 0.18);
+    --ink: #eceaf0;
+    --grid-dot: rgba(236, 234, 240, 0.16);
+    --danger: #e0736a;
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 6px 20px rgba(0, 0, 0, 0.35);
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  overscroll-behavior: none;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: ui-rounded, "SF Pro Rounded", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui,
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  /* The canvas manages its own gestures; never let the page rubber-band. */
+  overflow: hidden;
+  /* A long-press on the drawing surface must not raise the callout menu. */
+  -webkit-touch-callout: none;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+}

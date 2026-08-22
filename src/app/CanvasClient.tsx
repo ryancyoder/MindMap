@@ -1,0 +1,1012 @@
+"use client";
+
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  anchorPoint,
+  dist,
+  nearestSide,
+  rectCenter,
+  sideNormal,
+  type Pt,
+  type Rect,
+} from "@/lib/geometry";
+import {
+  emptyCanvas,
+  makeId,
+  nodeDisplayText,
+  parseCanvas,
+  PRESET_COLOR_IDS,
+  resolveColor,
+  serializeCanvas,
+  type Canvas,
+  type CanvasEdge,
+  type CanvasNode,
+  type Side,
+  type TextNode,
+} from "@/lib/jsoncanvas";
+import { nodeRect, recognize, RECOGNIZER } from "@/lib/recognize";
+import {
+  canRedo,
+  canUndo,
+  commit,
+  initHistory,
+  redo,
+  undo,
+  type History,
+} from "@/lib/history";
+import {
+  getCanvas,
+  newRecord,
+  putCanvas,
+  recallLastOpened,
+  rememberLastOpened,
+  type CanvasRecord,
+} from "@/lib/store";
+import styles from "./canvas.module.css";
+
+type Transform = { x: number; y: number; k: number };
+
+/**
+ * How long touch input stays locked out after the pen lifts. A resting palm
+ * lands as a touch pointer a beat before or after the nib does; without this
+ * window the map pans itself mid-sentence.
+ */
+const PEN_PRIORITY_MS = 400;
+
+/** Touch contacts wider than this are a palm, not a fingertip. */
+const PALM_CONTACT_PX = 45;
+
+const MIN_ZOOM = 0.15;
+const MAX_ZOOM = 4;
+
+type ActiveStroke = { pointerId: number; points: Pt[] };
+type Toast = { id: number; message: string };
+
+export default function CanvasClient() {
+  const [doc, setDoc] = useState<Canvas>(emptyCanvas);
+  const [record, setRecord] = useState<CanvasRecord | null>(null);
+  const [transform, setTransform] = useState<Transform>({ x: 0, y: 0, k: 1 });
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editingText, setEditingText] = useState("");
+  const [history, setHistory] = useState<History>(() => initHistory(emptyCanvas()));
+  const [toasts, setToasts] = useState<Toast[]>([]);
+  const [ready, setReady] = useState(false);
+
+  const surfaceRef = useRef<HTMLDivElement>(null);
+  const inkRef = useRef<HTMLCanvasElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // Live pointer bookkeeping. Refs, not state: these change at 240Hz and must
+  // never trigger a React render.
+  const strokeRef = useRef<ActiveStroke | null>(null);
+  const touchesRef = useRef<Map<number, { x: number; y: number }>>(new Map());
+  const penUntilRef = useRef(0);
+  const pinchRef = useRef<{ dist: number; cx: number; cy: number } | null>(null);
+  const panRef = useRef<{ x: number; y: number } | null>(null);
+  const transformRef = useRef(transform);
+  const docRef = useRef(doc);
+  const editingIdRef = useRef<string | null>(null);
+  const editingTextRef = useRef("");
+
+  // Mirror the state that pointer handlers read. Handlers fire between renders
+  // and must see the latest values, but they run at pointer rate and must not
+  // be rebuilt on every change — so they read refs rather than close over state.
+  // Writing these during render is what the React 19 rules forbid, hence the
+  // effect: it runs after every commit, before any event can observe it.
+  useEffect(() => {
+    transformRef.current = transform;
+    docRef.current = doc;
+    editingIdRef.current = editingId;
+    editingTextRef.current = editingText;
+  });
+
+  const showToast = useCallback((message: string) => {
+    const id = Date.now() + Math.random();
+    setToasts((prev) => [...prev, { id, message }]);
+    setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), 2600);
+  }, []);
+
+  // ─── LOAD / SAVE ──────────────────────────────────────────────────────────
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const lastId = recallLastOpened();
+      let loaded: CanvasRecord | undefined;
+      if (lastId) {
+        try {
+          loaded = await getCanvas(lastId);
+        } catch {
+          // A corrupt or blocked IndexedDB shouldn't stop the editor opening.
+        }
+      }
+      if (cancelled) return;
+      const next = loaded ?? newRecord("Untitled map");
+      setRecord(next);
+      setDoc(next.doc);
+      setHistory(initHistory(next.doc));
+      rememberLastOpened(next.id);
+      setReady(true);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Autosave, debounced. Every gesture writes; the user never presses save.
+  useEffect(() => {
+    if (!ready || !record) return;
+    const handle = setTimeout(() => {
+      void putCanvas({ ...record, doc, updated: new Date().toISOString() }).catch(() => {
+        showToast("Could not save locally.");
+      });
+    }, 600);
+    return () => clearTimeout(handle);
+  }, [doc, record, ready, showToast]);
+
+  /** Apply a document change and push it onto the undo stack. */
+  const applyDoc = useCallback((next: Canvas) => {
+    setDoc(next);
+    setHistory((h) => commit(h, next));
+  }, []);
+
+  // ─── COORDINATES ──────────────────────────────────────────────────────────
+
+  const toWorld = useCallback((clientX: number, clientY: number) => {
+    const surface = surfaceRef.current;
+    const t = transformRef.current;
+    if (!surface) return { x: 0, y: 0 };
+    const rect = surface.getBoundingClientRect();
+    return {
+      x: (clientX - rect.left - t.x) / t.k,
+      y: (clientY - rect.top - t.y) / t.k,
+    };
+  }, []);
+
+  // ─── INK LAYER ────────────────────────────────────────────────────────────
+
+  const resizeInk = useCallback(() => {
+    const canvas = inkRef.current;
+    const surface = surfaceRef.current;
+    if (!canvas || !surface) return;
+    const rect = surface.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = Math.round(rect.width * dpr);
+    canvas.height = Math.round(rect.height * dpr);
+    canvas.style.width = `${rect.width}px`;
+    canvas.style.height = `${rect.height}px`;
+  }, []);
+
+  useEffect(() => {
+    resizeInk();
+    window.addEventListener("resize", resizeInk);
+    return () => window.removeEventListener("resize", resizeInk);
+  }, [resizeInk]);
+
+  /** Redraw the wet stroke. Screen space, cleared and repainted each frame. */
+  const drawInk = useCallback(() => {
+    const canvas = inkRef.current;
+    const ctx = canvas?.getContext("2d");
+    if (!canvas || !ctx) return;
+
+    const dpr = window.devicePixelRatio || 1;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, canvas.width / dpr, canvas.height / dpr);
+
+    const stroke = strokeRef.current;
+    if (!stroke || stroke.points.length < 2) return;
+
+    const t = transformRef.current;
+    const style = getComputedStyle(document.documentElement);
+    ctx.strokeStyle = style.getPropertyValue("--ink").trim() || "#000";
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+
+    // Width tracks pressure, so the ink looks like ink. Apple Pencil reports
+    // real pressure; a finger or mouse reports 0.5 and gets a uniform line.
+    for (let i = 1; i < stroke.points.length; i++) {
+      const a = stroke.points[i - 1];
+      const b = stroke.points[i];
+      ctx.beginPath();
+      ctx.lineWidth = Math.max(1.2, 1 + b.p * 3.5) * Math.min(t.k, 1.5);
+      ctx.moveTo(a.x * t.k + t.x, a.y * t.k + t.y);
+      ctx.lineTo(b.x * t.k + t.x, b.y * t.k + t.y);
+      ctx.stroke();
+    }
+  }, []);
+
+  const clearInk = useCallback(() => {
+    const canvas = inkRef.current;
+    const ctx = canvas?.getContext("2d");
+    if (!canvas || !ctx) return;
+    const dpr = window.devicePixelRatio || 1;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, canvas.width / dpr, canvas.height / dpr);
+  }, []);
+
+  // ─── GESTURE APPLICATION ──────────────────────────────────────────────────
+
+  const createTextNode = useCallback((rect: Rect): TextNode => {
+    return {
+      id: makeId(),
+      type: "text",
+      text: "",
+      x: Math.round(rect.x),
+      y: Math.round(rect.y),
+      width: Math.round(rect.width),
+      height: Math.round(rect.height),
+    };
+  }, []);
+
+  const beginEditing = useCallback((node: CanvasNode) => {
+    setSelectedId(node.id);
+    setEditingId(node.id);
+    setEditingText(node.type === "text" ? node.text : nodeDisplayText(node));
+  }, []);
+
+  const applyGesture = useCallback(
+    (points: Pt[]) => {
+      const current = docRef.current;
+      const gesture = recognize(points, current.nodes);
+
+      switch (gesture.kind) {
+        case "tap": {
+          if (!gesture.nodeId) {
+            setSelectedId(null);
+            return;
+          }
+          const node = current.nodes.find((n) => n.id === gesture.nodeId);
+          if (!node) return;
+          // Tapping the node you already have selected opens it for text.
+          if (selectedId === node.id) beginEditing(node);
+          else setSelectedId(node.id);
+          return;
+        }
+
+        case "loop": {
+          const node = createTextNode(gesture.rect);
+          applyDoc({ ...current, nodes: [...current.nodes, node] });
+          beginEditing(node);
+          return;
+        }
+
+        case "branch": {
+          const node = createTextNode(gesture.rect);
+          const toSide = oppositeSide(gesture.fromSide);
+          const edge: CanvasEdge = {
+            id: makeId(),
+            fromNode: gesture.fromId,
+            fromSide: gesture.fromSide,
+            toNode: node.id,
+            toSide,
+          };
+          applyDoc({ nodes: [...current.nodes, node], edges: [...current.edges, edge] });
+          beginEditing(node);
+          return;
+        }
+
+        case "connect": {
+          const duplicate = current.edges.some(
+            (e) => e.fromNode === gesture.fromId && e.toNode === gesture.toId,
+          );
+          if (duplicate) {
+            showToast("Those are already connected.");
+            return;
+          }
+          const edge: CanvasEdge = {
+            id: makeId(),
+            fromNode: gesture.fromId,
+            fromSide: gesture.fromSide,
+            toNode: gesture.toId,
+            toSide: gesture.toSide,
+          };
+          applyDoc({ ...current, edges: [...current.edges, edge] });
+          return;
+        }
+
+        case "scribble": {
+          const nodeIds = new Set(gesture.nodeIds);
+          const crossedEdges = current.edges.filter((e) =>
+            edgeCrossedByStroke(e, current, gesture.strokePoints),
+          );
+          if (nodeIds.size === 0 && crossedEdges.length === 0) return;
+
+          const removedEdgeIds = new Set(crossedEdges.map((e) => e.id));
+          const nodes = current.nodes.filter((n) => !nodeIds.has(n.id));
+          const edges = current.edges.filter(
+            (e) =>
+              !removedEdgeIds.has(e.id) && !nodeIds.has(e.fromNode) && !nodeIds.has(e.toNode),
+          );
+          applyDoc({ nodes, edges });
+          if (selectedId && nodeIds.has(selectedId)) setSelectedId(null);
+          const parts: string[] = [];
+          if (nodeIds.size) parts.push(`${nodeIds.size} card${nodeIds.size > 1 ? "s" : ""}`);
+          if (removedEdgeIds.size) {
+            parts.push(`${removedEdgeIds.size} link${removedEdgeIds.size > 1 ? "s" : ""}`);
+          }
+          showToast(`Deleted ${parts.join(" and ")}.`);
+          return;
+        }
+
+        case "unknown":
+          // Deliberately silent. An unrecognized stroke just fades; nagging
+          // about it every time would be worse than the miss itself.
+          return;
+      }
+    },
+    [applyDoc, beginEditing, createTextNode, selectedId, showToast],
+  );
+
+  // ─── TEXT EDITING ─────────────────────────────────────────────────────────
+  //
+  // A real <textarea> over the node, which is what makes iPadOS Scribble work:
+  // handwriting goes straight into the field, no keyboard, no custom recognizer.
+
+  const commitEditing = useCallback(() => {
+    const id = editingIdRef.current;
+    if (!id) return;
+    setEditingId(null);
+
+    const current = docRef.current;
+    const node = current.nodes.find((n) => n.id === id);
+    if (!node || node.type !== "text") return;
+
+    const trimmed = editingTextRef.current.trim();
+    if (node.text === trimmed) return;
+    const nodes = current.nodes.map((n) =>
+      n.id === id ? ({ ...n, text: trimmed } as CanvasNode) : n,
+    );
+    applyDoc({ ...current, nodes });
+  }, [applyDoc]);
+
+  // ─── POINTER ROUTING ──────────────────────────────────────────────────────
+  //
+  // Pen draws. Touch navigates. That single split is what makes palm rejection
+  // free: a palm can only ever pan, and pen priority stops even that.
+
+  const isPenPriority = () => performance.now() < penUntilRef.current;
+
+  const onPointerDown = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      const target = e.target as HTMLElement;
+      if (target.closest(`.${styles.nodeEditor}`) || target.closest(`.${styles.chrome}`)) return;
+
+      if (e.pointerType === "touch") {
+        if (isPenPriority()) return;
+        if (e.width > PALM_CONTACT_PX || e.height > PALM_CONTACT_PX) return;
+
+        touchesRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+        const touches = [...touchesRef.current.values()];
+        if (touches.length === 1) {
+          panRef.current = { x: e.clientX, y: e.clientY };
+          pinchRef.current = null;
+        } else if (touches.length === 2) {
+          panRef.current = null;
+          pinchRef.current = {
+            dist: dist(touches[0], touches[1]),
+            cx: (touches[0].x + touches[1].x) / 2,
+            cy: (touches[0].y + touches[1].y) / 2,
+          };
+        }
+        return;
+      }
+
+      // Pen and mouse both draw, so the gestures are testable without an iPad.
+      penUntilRef.current = performance.now() + PEN_PRIORITY_MS;
+      touchesRef.current.clear();
+      panRef.current = null;
+      pinchRef.current = null;
+
+      if (editingId) commitEditing();
+
+      const world = toWorld(e.clientX, e.clientY);
+      strokeRef.current = {
+        pointerId: e.pointerId,
+        points: [{ x: world.x, y: world.y, p: e.pressure || 0.5, t: performance.now() }],
+      };
+      e.currentTarget.setPointerCapture(e.pointerId);
+    },
+    [commitEditing, editingId, toWorld],
+  );
+
+  const onPointerMove = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      if (e.pointerType === "touch") {
+        if (isPenPriority()) return;
+        if (!touchesRef.current.has(e.pointerId)) return;
+        touchesRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+        const touches = [...touchesRef.current.values()];
+
+        if (touches.length === 1 && panRef.current) {
+          const dx = e.clientX - panRef.current.x;
+          const dy = e.clientY - panRef.current.y;
+          panRef.current = { x: e.clientX, y: e.clientY };
+          setTransform((t) => ({ ...t, x: t.x + dx, y: t.y + dy }));
+        } else if (touches.length === 2 && pinchRef.current) {
+          const nextDist = dist(touches[0], touches[1]);
+          const cx = (touches[0].x + touches[1].x) / 2;
+          const cy = (touches[0].y + touches[1].y) / 2;
+          const prev = pinchRef.current;
+          const scale = nextDist / (prev.dist || nextDist);
+          pinchRef.current = { dist: nextDist, cx, cy };
+
+          setTransform((t) => {
+            const k = clamp(t.k * scale, MIN_ZOOM, MAX_ZOOM);
+            const surface = surfaceRef.current;
+            if (!surface) return t;
+            const rect = surface.getBoundingClientRect();
+            const px = cx - rect.left;
+            const py = cy - rect.top;
+            // Keep the point between the fingers pinned while scaling, and
+            // carry the midpoint drift so pinch and pan work as one gesture.
+            const ratio = k / t.k;
+            return {
+              k,
+              x: px - (px - t.x) * ratio + (cx - prev.cx),
+              y: py - (py - t.y) * ratio + (cy - prev.cy),
+            };
+          });
+        }
+        return;
+      }
+
+      const stroke = strokeRef.current;
+      if (!stroke || stroke.pointerId !== e.pointerId) return;
+      penUntilRef.current = performance.now() + PEN_PRIORITY_MS;
+
+      // Coalesced events recover the full ~240Hz Pencil sample rate that the
+      // browser batched into this one frame; without them, fast strokes come
+      // back as polygons and the recognizer misreads their shape.
+      const events = typeof e.nativeEvent.getCoalescedEvents === "function"
+        ? e.nativeEvent.getCoalescedEvents()
+        : [e.nativeEvent];
+
+      for (const ev of events) {
+        const world = toWorld(ev.clientX, ev.clientY);
+        stroke.points.push({ x: world.x, y: world.y, p: ev.pressure || 0.5, t: performance.now() });
+      }
+      drawInk();
+    },
+    [drawInk, toWorld],
+  );
+
+  const endTouch = useCallback((pointerId: number) => {
+    touchesRef.current.delete(pointerId);
+    if (touchesRef.current.size < 2) pinchRef.current = null;
+    if (touchesRef.current.size === 1) {
+      const [only] = [...touchesRef.current.values()];
+      panRef.current = { x: only.x, y: only.y };
+    }
+    if (touchesRef.current.size === 0) panRef.current = null;
+  }, []);
+
+  const onPointerUp = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      if (e.pointerType === "touch") {
+        endTouch(e.pointerId);
+        return;
+      }
+      const stroke = strokeRef.current;
+      if (!stroke || stroke.pointerId !== e.pointerId) return;
+
+      penUntilRef.current = performance.now() + PEN_PRIORITY_MS;
+      strokeRef.current = null;
+      clearInk();
+      applyGesture(stroke.points);
+    },
+    [applyGesture, clearInk, endTouch],
+  );
+
+  const onPointerCancel = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      if (e.pointerType === "touch") {
+        endTouch(e.pointerId);
+        return;
+      }
+      strokeRef.current = null;
+      clearInk();
+    },
+    [clearInk, endTouch],
+  );
+
+  const onWheel = useCallback((e: React.WheelEvent<HTMLDivElement>) => {
+    const surface = surfaceRef.current;
+    if (!surface) return;
+    const rect = surface.getBoundingClientRect();
+    const px = e.clientX - rect.left;
+    const py = e.clientY - rect.top;
+
+    setTransform((t) => {
+      // Trackpad pinch arrives as ctrl+wheel; plain wheel scrolls the canvas.
+      if (!e.ctrlKey && !e.metaKey) return { ...t, x: t.x - e.deltaX, y: t.y - e.deltaY };
+      const k = clamp(t.k * Math.exp(-e.deltaY / 240), MIN_ZOOM, MAX_ZOOM);
+      const ratio = k / t.k;
+      return { k, x: px - (px - t.x) * ratio, y: py - (py - t.y) * ratio };
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!editingId) return;
+    const handle = requestAnimationFrame(() => {
+      const el = textareaRef.current;
+      if (!el) return;
+      el.focus();
+      el.setSelectionRange(el.value.length, el.value.length);
+    });
+    return () => cancelAnimationFrame(handle);
+  }, [editingId]);
+
+  // ─── COMMANDS ─────────────────────────────────────────────────────────────
+
+  const doUndo = useCallback(() => {
+    const result = undo(history);
+    if (!result) return;
+    setHistory(result.history);
+    setDoc(result.doc);
+    setEditingId(null);
+  }, [history]);
+
+  const doRedo = useCallback(() => {
+    const result = redo(history);
+    if (!result) return;
+    setHistory(result.history);
+    setDoc(result.doc);
+    setEditingId(null);
+  }, [history]);
+
+  const deleteSelected = useCallback(() => {
+    if (!selectedId) return;
+    const current = docRef.current;
+    applyDoc({
+      nodes: current.nodes.filter((n) => n.id !== selectedId),
+      edges: current.edges.filter((e) => e.fromNode !== selectedId && e.toNode !== selectedId),
+    });
+    setSelectedId(null);
+    setEditingId(null);
+  }, [applyDoc, selectedId]);
+
+  const setSelectedColor = useCallback(
+    (color: string | null) => {
+      if (!selectedId) return;
+      const current = docRef.current;
+      const nodes = current.nodes.map((n) => {
+        if (n.id !== selectedId) return n;
+        const next = { ...n } as CanvasNode;
+        if (color) next.color = color;
+        else delete next.color;
+        return next;
+      });
+      applyDoc({ ...current, nodes });
+    },
+    [applyDoc, selectedId],
+  );
+
+  const zoomToFit = useCallback(() => {
+    const surface = surfaceRef.current;
+    const nodes = docRef.current.nodes;
+    if (!surface || nodes.length === 0) {
+      setTransform({ x: 0, y: 0, k: 1 });
+      return;
+    }
+    const rect = surface.getBoundingClientRect();
+    const minX = Math.min(...nodes.map((n) => n.x));
+    const minY = Math.min(...nodes.map((n) => n.y));
+    const maxX = Math.max(...nodes.map((n) => n.x + n.width));
+    const maxY = Math.max(...nodes.map((n) => n.y + n.height));
+    const pad = 80;
+    const k = clamp(
+      Math.min(rect.width / (maxX - minX + pad * 2), rect.height / (maxY - minY + pad * 2)),
+      MIN_ZOOM,
+      1.5,
+    );
+    setTransform({
+      k,
+      x: rect.width / 2 - ((minX + maxX) / 2) * k,
+      y: rect.height / 2 - ((minY + maxY) / 2) * k,
+    });
+  }, []);
+
+  // ─── FILE I/O ─────────────────────────────────────────────────────────────
+
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const openFile = useCallback(
+    async (file: File) => {
+      try {
+        const text = await file.text();
+        const { canvas, warnings } = parseCanvas(text);
+        const name = file.name.replace(/\.canvas$/i, "") || "Untitled map";
+        const next = newRecord(name, canvas);
+        setRecord(next);
+        setDoc(canvas);
+        setHistory(initHistory(canvas));
+        setSelectedId(null);
+        setEditingId(null);
+        rememberLastOpened(next.id);
+        await putCanvas(next);
+        if (warnings.length) showToast(`Opened with ${warnings.length} warning(s). ${warnings[0]}`);
+        else showToast(`Opened ${file.name}`);
+        requestAnimationFrame(zoomToFit);
+      } catch (err) {
+        showToast(err instanceof Error ? err.message : "Could not open that file.");
+      }
+    },
+    [showToast, zoomToFit],
+  );
+
+  const saveFile = useCallback(() => {
+    const text = serializeCanvas(docRef.current);
+    const blob = new Blob([text], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${record?.name || "mindmap"}.canvas`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }, [record]);
+
+  const newCanvas = useCallback(() => {
+    const next = newRecord("Untitled map");
+    setRecord(next);
+    setDoc(next.doc);
+    setHistory(initHistory(next.doc));
+    setSelectedId(null);
+    setEditingId(null);
+    setTransform({ x: 0, y: 0, k: 1 });
+    rememberLastOpened(next.id);
+    void putCanvas(next);
+  }, []);
+
+  // ─── KEYBOARD ─────────────────────────────────────────────────────────────
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      const typing = target?.tagName === "TEXTAREA" || target?.tagName === "INPUT";
+
+      if (typing) {
+        if (e.key === "Escape") {
+          e.preventDefault();
+          commitEditing();
+        }
+        // Cmd/Ctrl+Enter finishes a card without reaching for the mouse.
+        if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+          e.preventDefault();
+          commitEditing();
+        }
+        return;
+      }
+
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "z") {
+        e.preventDefault();
+        if (e.shiftKey) doRedo();
+        else doUndo();
+        return;
+      }
+      if (e.key === "Backspace" || e.key === "Delete") {
+        if (selectedId) {
+          e.preventDefault();
+          deleteSelected();
+        }
+        return;
+      }
+      if (e.key === "Escape") setSelectedId(null);
+      if (e.key === "0" && (e.metaKey || e.ctrlKey)) {
+        e.preventDefault();
+        zoomToFit();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [commitEditing, deleteSelected, doRedo, doUndo, selectedId, zoomToFit]);
+
+  // ─── RENDER ───────────────────────────────────────────────────────────────
+
+  const edgePaths = useMemo(() => buildEdgePaths(doc), [doc]);
+  const selectedNode = doc.nodes.find((n) => n.id === selectedId) ?? null;
+
+  return (
+    <div className={styles.root}>
+      <div
+        ref={surfaceRef}
+        className={styles.surface}
+        style={{
+          backgroundSize: `${28 * transform.k}px ${28 * transform.k}px`,
+          backgroundPosition: `${transform.x}px ${transform.y}px`,
+        }}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onPointerCancel={onPointerCancel}
+        onWheel={onWheel}
+      >
+        <div
+          className={styles.world}
+          style={{
+            transform: `translate(${transform.x}px, ${transform.y}px) scale(${transform.k})`,
+          }}
+        >
+          <svg className={styles.edges} overflow="visible">
+            <defs>
+              <marker
+                id="mm-arrow"
+                viewBox="0 0 10 10"
+                refX="9"
+                refY="5"
+                markerWidth="7"
+                markerHeight="7"
+                orient="auto-start-reverse"
+              >
+                <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--border-strong)" />
+              </marker>
+            </defs>
+            {edgePaths.map((edge) => (
+              <path
+                key={edge.id}
+                data-edge-id={edge.id}
+                d={edge.d}
+                className={styles.edge}
+                stroke={resolveColor(edge.color) ?? "var(--border-strong)"}
+                markerEnd={edge.toEnd === "none" ? undefined : "url(#mm-arrow)"}
+                markerStart={edge.fromEnd === "arrow" ? "url(#mm-arrow)" : undefined}
+              />
+            ))}
+          </svg>
+
+          {doc.nodes.map((node) => {
+            const accent = resolveColor(node.color);
+            const isEditing = editingId === node.id;
+            return (
+              <div
+                key={node.id}
+                data-node-id={node.id}
+                className={[
+                  styles.node,
+                  node.type === "group" ? styles.groupNode : "",
+                  selectedId === node.id ? styles.nodeSelected : "",
+                ]
+                  .filter(Boolean)
+                  .join(" ")}
+                style={{
+                  left: node.x,
+                  top: node.y,
+                  width: node.width,
+                  height: node.height,
+                  borderColor: accent ?? undefined,
+                }}
+              >
+                {accent ? <span className={styles.nodeStripe} style={{ background: accent }} /> : null}
+                {isEditing ? (
+                  <textarea
+                    ref={textareaRef}
+                    className={styles.nodeEditor}
+                    value={editingText}
+                    onChange={(e) => setEditingText(e.target.value)}
+                    onBlur={commitEditing}
+                    placeholder="Write here…"
+                  />
+                ) : (
+                  <div className={node.type === "group" ? styles.groupLabel : styles.nodeText}>
+                    {nodeDisplayText(node) ||
+                      (node.type === "group" ? null : (
+                        <span className={styles.nodePlaceholder}>Empty</span>
+                      ))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+
+        <canvas ref={inkRef} className={styles.ink} />
+      </div>
+
+      {/* ─── CHROME ─────────────────────────────────────────────────────── */}
+
+      <header className={`${styles.chrome} ${styles.topBar}`}>
+        <input
+          className={styles.title}
+          value={record?.name ?? ""}
+          onChange={(e) => setRecord((r) => (r ? { ...r, name: e.target.value } : r))}
+          aria-label="Canvas name"
+        />
+        <div className={styles.topActions}>
+          <button className={styles.button} onClick={newCanvas}>
+            New
+          </button>
+          <button className={styles.button} onClick={() => fileInputRef.current?.click()}>
+            Open
+          </button>
+          <button className={styles.button} onClick={saveFile}>
+            Save .canvas
+          </button>
+        </div>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".canvas,application/json"
+          className={styles.hiddenInput}
+          onChange={(e) => {
+            const file = e.target.files?.[0];
+            if (file) void openFile(file);
+            e.target.value = "";
+          }}
+        />
+      </header>
+
+      <div className={`${styles.chrome} ${styles.bottomBar}`}>
+        <button className={styles.button} onClick={doUndo} disabled={!canUndo(history)}>
+          Undo
+        </button>
+        <button className={styles.button} onClick={doRedo} disabled={!canRedo(history)}>
+          Redo
+        </button>
+        <span className={styles.spacer} />
+        <button className={styles.button} onClick={zoomToFit}>
+          Fit
+        </button>
+        <span className={styles.zoomLabel}>{Math.round(transform.k * 100)}%</span>
+      </div>
+
+      {selectedNode ? (
+        <div className={`${styles.chrome} ${styles.inspector}`}>
+          <div className={styles.swatches}>
+            <button
+              className={`${styles.swatch} ${styles.swatchNone}`}
+              onClick={() => setSelectedColor(null)}
+              aria-label="Default color"
+            />
+            {PRESET_COLOR_IDS.map((id) => (
+              <button
+                key={id}
+                className={styles.swatch}
+                style={{ background: resolveColor(id) ?? undefined }}
+                onClick={() => setSelectedColor(id)}
+                aria-label={`Color ${id}`}
+              />
+            ))}
+          </div>
+          <button
+            className={styles.button}
+            onClick={() => {
+              const node = docRef.current.nodes.find((n) => n.id === selectedId);
+              if (node) beginEditing(node);
+            }}
+          >
+            Edit
+          </button>
+          <button className={`${styles.button} ${styles.danger}`} onClick={deleteSelected}>
+            Delete
+          </button>
+        </div>
+      ) : null}
+
+      {doc.nodes.length === 0 && ready ? (
+        <div className={styles.emptyHint}>
+          <p className={styles.emptyTitle}>Draw a circle to begin.</p>
+          <ul className={styles.emptyList}>
+            <li>
+              <b>Circle</b> anywhere → a new card
+            </li>
+            <li>
+              <b>Line out</b> of a card → a child card, joined
+            </li>
+            <li>
+              <b>Line between</b> two cards → a link
+            </li>
+            <li>
+              <b>Scribble</b> over anything → delete it
+            </li>
+            <li>
+              <b>One finger</b> pans, <b>two</b> zoom. The pen never pans.
+            </li>
+          </ul>
+        </div>
+      ) : null}
+
+      <div className={styles.toasts}>
+        {toasts.map((t) => (
+          <div key={t.id} className={styles.toast}>
+            {t.message}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ─── HELPERS ────────────────────────────────────────────────────────────────
+
+function clamp(v: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, v));
+}
+
+function oppositeSide(side: Side): Side {
+  switch (side) {
+    case "top":
+      return "bottom";
+    case "bottom":
+      return "top";
+    case "left":
+      return "right";
+    case "right":
+      return "left";
+  }
+}
+
+type RenderedEdge = {
+  id: string;
+  d: string;
+  color?: string;
+  fromEnd?: string;
+  toEnd?: string;
+};
+
+/**
+ * Build the SVG path for each edge. Sides are honored when the file specifies
+ * them and inferred from node positions when it doesn't, so canvases authored
+ * elsewhere still render sensibly.
+ */
+function buildEdgePaths(doc: Canvas): RenderedEdge[] {
+  const byId = new Map(doc.nodes.map((n) => [n.id, n]));
+  const out: RenderedEdge[] = [];
+
+  for (const edge of doc.edges) {
+    const from = byId.get(edge.fromNode);
+    const to = byId.get(edge.toNode);
+    if (!from || !to) continue;
+
+    const fromRect = nodeRect(from);
+    const toRect = nodeRect(to);
+    const fromSide = edge.fromSide ?? nearestSide(fromRect, rectCenter(toRect));
+    const toSide = edge.toSide ?? nearestSide(toRect, rectCenter(fromRect));
+
+    const a = anchorPoint(fromRect, fromSide);
+    const b = anchorPoint(toRect, toSide);
+    const na = sideNormal(fromSide);
+    const nb = sideNormal(toSide);
+    const reach = Math.max(40, dist(a, b) * 0.4);
+
+    const c1 = { x: a.x + na.x * reach, y: a.y + na.y * reach };
+    const c2 = { x: b.x + nb.x * reach, y: b.y + nb.y * reach };
+
+    out.push({
+      id: edge.id,
+      d: `M ${a.x} ${a.y} C ${c1.x} ${c1.y}, ${c2.x} ${c2.y}, ${b.x} ${b.y}`,
+      color: edge.color,
+      fromEnd: edge.fromEnd,
+      toEnd: edge.toEnd,
+    });
+  }
+
+  return out;
+}
+
+/** Did a scribble cross this edge? Sampled along its straight-line span. */
+function edgeCrossedByStroke(edge: CanvasEdge, doc: Canvas, points: Pt[]): boolean {
+  const from = doc.nodes.find((n) => n.id === edge.fromNode);
+  const to = doc.nodes.find((n) => n.id === edge.toNode);
+  if (!from || !to) return false;
+
+  const a = rectCenter(nodeRect(from));
+  const b = rectCenter(nodeRect(to));
+
+  for (const p of points) {
+    const t = closestT(p, a, b);
+    const x = a.x + (b.x - a.x) * t;
+    const y = a.y + (b.y - a.y) * t;
+    if (Math.hypot(p.x - x, p.y - y) < RECOGNIZER.nodeHitPadding * 2) return true;
+  }
+  return false;
+}
+
+function closestT(p: { x: number; y: number }, a: { x: number; y: number }, b: { x: number; y: number }): number {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const lenSq = dx * dx + dy * dy;
+  if (lenSq === 0) return 0;
+  return clamp(((p.x - a.x) * dx + (p.y - a.y) * dy) / lenSq, 0, 1);
+}

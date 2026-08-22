@@ -15,6 +15,7 @@ node scripts/verify-pen-input.mjs         # pen event capture
 node scripts/verify-recognizer.mjs        # realistic hand-drawn shapes
 node scripts/verify-touch.mjs             # pan, pinch, dragging cards
 node scripts/verify-library.mjs           # card sizing and the map library
+node scripts/verify-paste.mjs             # pasting and copying map JSON
 node scripts/verify-roundtrip.mjs         # .canvas fidelity
 ```
 
@@ -68,6 +69,11 @@ to `width: 1`. The 50px-wide contact case is the one that matters; keep it.
 checks are the losing ones — that "New" does not strand the map you were on,
 that switching maps keeps an edit made a moment earlier (autosave is debounced,
 so that is a real race), and that deleting the open map leaves something open.
+
+`verify-paste.mjs` covers JSON in and out. Its useful checks are the unhappy
+ones: malformed input has to say so rather than destroy the open map, a
+partly-broken file has to open with what survived and report what it dropped,
+and replacing a map has to stay one undo away.
 
 The lesson generalizes three times over: when a check drives the app through a
 different input path than the user does, or feeds it idealized input the user

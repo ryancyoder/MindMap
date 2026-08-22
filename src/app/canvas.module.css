@@ -448,6 +448,77 @@
   font-weight: 600;
 }
 
+/* ─── PASTE JSON ───────────────────────────────────────────────────────── */
+
+.pasteBody {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+  padding: 12px 14px;
+}
+
+.pasteInput {
+  flex: 1;
+  min-height: 200px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg);
+  color: var(--text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+  line-height: 1.5;
+  resize: none;
+  /* This is a text field, so it keeps the browser's own touch handling. */
+  touch-action: auto;
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+.pasteInput:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+
+.pasteStatus {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-height: 20px;
+  font-size: 13px;
+}
+
+.pasteHint {
+  color: var(--text-muted);
+}
+
+.pasteOk {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.pasteError {
+  color: var(--danger);
+}
+
+.pasteWarning {
+  color: var(--text-muted);
+}
+
+.pasteActions {
+  display: flex;
+  gap: 6px;
+}
+
+.primary {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+}
+
 /* ─── EMPTY STATE ──────────────────────────────────────────────────────── */
 
 .emptyHint {

@@ -102,6 +102,9 @@ export default function CanvasClient() {
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameText, setRenameText] = useState("");
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [pasteOpen, setPasteOpen] = useState(false);
+  const [pasteText, setPasteText] = useState("");
+  const [copied, setCopied] = useState(false);
 
   const surfaceRef = useRef<HTMLDivElement>(null);
   const inkRef = useRef<HTMLCanvasElement>(null);
@@ -927,6 +930,69 @@ export default function CanvasClient() {
     await refreshLibrary();
   }, [adopt, flushSave, refreshLibrary]);
 
+  // ─── PASTE / COPY JSON ────────────────────────────────────────────────────
+  //
+  // The file picker is fine for maps that already live in Files, but the way a
+  // map actually travels between here and a conversation is as text. This is
+  // the same parser the file path uses, so anything that opens as a file opens
+  // as a paste and vice versa.
+
+  const pasteResult = useMemo(() => {
+    const text = pasteText.trim();
+    if (!text) return null;
+    try {
+      const { canvas, warnings } = parseCanvas(text);
+      return { canvas, warnings, error: null as string | null };
+    } catch (err) {
+      return {
+        canvas: null,
+        warnings: [] as string[],
+        error: err instanceof Error ? err.message : "That isn't valid JSON.",
+      };
+    }
+  }, [pasteText]);
+
+  const closePaste = useCallback(() => {
+    setPasteOpen(false);
+    setPasteText("");
+  }, []);
+
+  const pasteAsNewMap = useCallback(async () => {
+    if (!pasteResult?.canvas) return;
+    await flushSave();
+    const next = newRecord("Pasted map", pasteResult.canvas);
+    await putCanvas(next);
+    adopt(next);
+    closePaste();
+    showToast(`Opened ${pasteResult.canvas.nodes.length} cards as a new map.`);
+    requestAnimationFrame(zoomToFit);
+  }, [adopt, closePaste, flushSave, pasteResult, showToast, zoomToFit]);
+
+  const pasteIntoThisMap = useCallback(() => {
+    if (!pasteResult?.canvas) return;
+    // Replacing goes through applyDoc, so a mistaken paste is one undo away.
+    applyDoc(pasteResult.canvas);
+    setSelectedId(null);
+    setEditingId(null);
+    closePaste();
+    showToast("Replaced this map. Undo if that wasn't right.");
+    requestAnimationFrame(zoomToFit);
+  }, [applyDoc, closePaste, pasteResult, showToast, zoomToFit]);
+
+  const copyCurrentJson = useCallback(async () => {
+    const text = serializeCanvas(docRef.current);
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // Clipboard access can be refused; show the text so it can be copied by
+      // hand rather than failing with nothing on screen.
+      setPasteText(text);
+      showToast("Couldn't reach the clipboard — copy it from the box.");
+    }
+  }, [showToast]);
+
   // ─── KEYBOARD ─────────────────────────────────────────────────────────────
 
   useEffect(() => {
@@ -1097,6 +1163,9 @@ export default function CanvasClient() {
           <button className={styles.button} onClick={() => fileInputRef.current?.click()}>
             Open
           </button>
+          <button className={styles.button} onClick={() => setPasteOpen(true)}>
+            JSON
+          </button>
           <button className={styles.button} onClick={saveFile}>
             Save .canvas
           </button>
@@ -1181,6 +1250,83 @@ export default function CanvasClient() {
               <b>One finger</b> pans, <b>two</b> zoom. The pen never pans.
             </li>
           </ul>
+        </div>
+      ) : null}
+
+      {pasteOpen ? (
+        <div className={styles.sheetBackdrop} onClick={closePaste}>
+          <div
+            className={`${styles.chrome} ${styles.sheet}`}
+            onClick={(e) => e.stopPropagation()}
+            role="dialog"
+            aria-label="Map JSON"
+          >
+            <header className={styles.sheetHeader}>
+              <h2 className={styles.sheetTitle}>Map JSON</h2>
+              <button className={styles.button} onClick={closePaste}>
+                Close
+              </button>
+            </header>
+
+            <div className={styles.pasteBody}>
+              <textarea
+                className={styles.pasteInput}
+                value={pasteText}
+                onChange={(e) => setPasteText(e.target.value)}
+                placeholder="Paste .canvas JSON here…"
+                autoFocus
+                spellCheck={false}
+                aria-label="Canvas JSON"
+              />
+
+              <div className={styles.pasteStatus} aria-live="polite">
+                {pasteResult === null ? (
+                  <span className={styles.pasteHint}>
+                    Paste a JSON Canvas file — the same format Save .canvas writes.
+                  </span>
+                ) : pasteResult.error ? (
+                  <span className={styles.pasteError}>{pasteResult.error}</span>
+                ) : (
+                  <>
+                    <span className={styles.pasteOk}>
+                      {pasteResult.canvas!.nodes.length} card
+                      {pasteResult.canvas!.nodes.length === 1 ? "" : "s"} ·{" "}
+                      {pasteResult.canvas!.edges.length} link
+                      {pasteResult.canvas!.edges.length === 1 ? "" : "s"}
+                    </span>
+                    {pasteResult.warnings.length ? (
+                      <span className={styles.pasteWarning}>
+                        {pasteResult.warnings.length} thing
+                        {pasteResult.warnings.length === 1 ? "" : "s"} skipped: {pasteResult.warnings[0]}
+                      </span>
+                    ) : null}
+                  </>
+                )}
+              </div>
+            </div>
+
+            <footer className={styles.sheetFooter}>
+              <button className={styles.button} onClick={() => void copyCurrentJson()}>
+                {copied ? "Copied" : "Copy this map"}
+              </button>
+              <div className={styles.pasteActions}>
+                <button
+                  className={styles.button}
+                  onClick={pasteIntoThisMap}
+                  disabled={!pasteResult?.canvas}
+                >
+                  Replace this map
+                </button>
+                <button
+                  className={`${styles.button} ${styles.primary}`}
+                  onClick={() => void pasteAsNewMap()}
+                  disabled={!pasteResult?.canvas}
+                >
+                  Open as new map
+                </button>
+              </div>
+            </footer>
+          </div>
         </div>
       ) : null}
 

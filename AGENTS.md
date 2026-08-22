@@ -90,6 +90,19 @@ rather than estimating, because wrapping depends on the actual font.
 the card's padding or border in CSS, change them here too** — they were 3px
 apart once and that was enough to clip a whole wrapped line on a narrow card.
 
+## JSON in and out
+
+`JSON` opens a sheet that pastes a map in or copies the current one out as
+text. It runs the **same `parseCanvas`** as the file picker, so anything that
+opens as a file opens as a paste — do not add a second, more lenient parser
+here. Input is validated as it is typed and the apply buttons stay disabled
+until it parses, so a bad paste can never reach the document. "Replace this
+map" goes through `applyDoc`, which keeps it one undo away.
+
+Text, not files, is how a map travels to and from a conversation. That is the
+whole point of this surface and of the v2 cloud library that will replace it
+for agents.
+
 ## The map library
 
 IndexedDB holds every map; `voicemap`-style last-opened lives in localStorage.

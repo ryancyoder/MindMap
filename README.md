@@ -45,7 +45,10 @@ you've made — switch, rename or delete from there. **New** starts a fresh map
 without abandoning the one you were on.
 
 **Open** loads a `.canvas` file from Files or iCloud Drive; **Save .canvas**
-downloads the current map back out. Files from other apps round-trip without
+downloads the current map back out. **JSON** does the same thing as text —
+paste a map straight in, or copy the current one to the clipboard, which is how
+you hand a map to an AI and get one back. Pasted JSON is checked as you type
+and tells you what it contains before you apply it. Files from other apps round-trip without
 losing their data — including attributes MindMap itself doesn't use.
 
 ## Running it

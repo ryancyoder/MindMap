@@ -11,6 +11,7 @@ Use a globally installed copy, or `npx`:
 npm run build && npm run start &          # serve the app on :3000
 
 node scripts/verify-gestures.mjs          # the pen model
+node scripts/verify-pen-input.mjs         # pen event capture
 node scripts/verify-roundtrip.mjs         # .canvas fidelity
 ```
 
@@ -36,7 +37,18 @@ both color forms, edge labels and ends, and unknown keys at node and top level
 — then asserts every one of them survived. This is the guarantee that lets a
 file move between MindMap, Obsidian, and an AI without losing anything.
 
-Strokes are dispatched as mouse events, which the app treats as pen input. That
-covers the recognizer and everything downstream of it. It does **not** cover
-palm rejection or pressure, which need real touch and pen hardware — test those
-on an iPad by hand.
+`verify-pen-input.mjs` guards the input path itself, which the other two do not
+reach. They drive the app with Playwright's mouse, and those are *trusted*
+events where Chromium populates `getCoalescedEvents()`. Safari and synthetic
+events return an empty array instead — and code that trusted that array without
+a fallback captured zero points from every stroke, so the app looked completely
+dead on an iPad while every mouse-driven check passed. This script dispatches
+`pointerType: "pen"` events with an empty coalesced list, and first asserts the
+list really is empty, so a pass proves the fallback works rather than proving
+the environment happened to be friendly.
+
+The lesson generalizes: when a check drives the app through a different input
+path than the user does, a green suite says nothing about the user's path.
+
+None of these cover palm rejection or pressure, which need real touch and pen
+hardware — test those on an iPad by hand.

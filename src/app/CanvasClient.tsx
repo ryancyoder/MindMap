@@ -5,6 +5,7 @@ import {
   anchorPoint,
   dist,
   nearestSide,
+  pathLength,
   rectCenter,
   sideNormal,
   type Pt,
@@ -329,10 +330,16 @@ export default function CanvasClient() {
           return;
         }
 
-        case "unknown":
-          // Deliberately silent. An unrecognized stroke just fades; nagging
-          // about it every time would be worse than the miss itself.
+        case "unknown": {
+          // Never fail silently on a deliberate stroke. A miss the user can see
+          // is a recognizer to tune; a miss they cannot see is a dead app.
+          // Short accidental drags stay quiet, so this does not nag.
+          const length = pathLength(points);
+          if (length > RECOGNIZER.tapMaxLength * 4) {
+            showToast("Didn't catch that — try closing the circle.");
+          }
           return;
+        }
       }
     },
     [applyDoc, beginEditing, createTextNode, selectedId, showToast],
@@ -458,9 +465,18 @@ export default function CanvasClient() {
       // Coalesced events recover the full ~240Hz Pencil sample rate that the
       // browser batched into this one frame; without them, fast strokes come
       // back as polygons and the recognizer misreads their shape.
-      const events = typeof e.nativeEvent.getCoalescedEvents === "function"
-        ? e.nativeEvent.getCoalescedEvents()
-        : [e.nativeEvent];
+      //
+      // The method existing does NOT mean it returns anything: Safari hands
+      // back an empty array in cases where Chromium fills it in, and so do
+      // synthetic events. Trusting it blindly captured zero points, which made
+      // every stroke collapse to a single-point "tap" and the app look dead.
+      // Always fall back to the event itself — a lower sample rate is a
+      // degraded stroke; an empty list is no stroke at all.
+      const coalesced =
+        typeof e.nativeEvent.getCoalescedEvents === "function"
+          ? e.nativeEvent.getCoalescedEvents()
+          : [];
+      const events = coalesced.length > 0 ? coalesced : [e.nativeEvent];
 
       for (const ev of events) {
         const world = toWorld(ev.clientX, ev.clientY);

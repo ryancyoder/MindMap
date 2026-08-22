@@ -36,7 +36,9 @@ import {
   type History,
 } from "@/lib/history";
 import {
+  deleteCanvas,
   getCanvas,
+  listCanvases,
   newRecord,
   putCanvas,
   recallLastOpened,
@@ -66,6 +68,16 @@ const PALM_CONTACT_PX = 60;
 /** How long after pen contact a wide touch is still treated as a palm. */
 const PALM_WINDOW_MS = 2500;
 
+/** Card padding and border, mirrored from canvas.module.css so measurement
+ *  matches what actually renders. Getting the border wrong here loses a whole
+ *  wrapped line on a narrow card. */
+const CARD_PADDING_X = 12;
+const CARD_PADDING_Y = 10;
+const CARD_BORDER = 1.5;
+
+/** Nothing may be resized smaller than this and stay usable. */
+const MIN_CARD = { width: 90, height: 48 };
+
 const MIN_ZOOM = 0.15;
 const MAX_ZOOM = 4;
 
@@ -85,6 +97,11 @@ export default function CanvasClient() {
   // Bumped when a finger-drag ends, so the move lands on the undo stack as one
   // entry instead of one per frame.
   const [dragCommit, setDragCommit] = useState(0);
+  const [libraryOpen, setLibraryOpen] = useState(false);
+  const [library, setLibrary] = useState<CanvasRecord[]>([]);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameText, setRenameText] = useState("");
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
   const surfaceRef = useRef<HTMLDivElement>(null);
   const inkRef = useRef<HTMLCanvasElement>(null);
@@ -104,6 +121,13 @@ export default function CanvasClient() {
     moved: boolean;
   } | null>(null);
   const lastPenAtRef = useRef(0);
+  const resizeRef = useRef<{
+    pointerId: number;
+    nodeId: string;
+    startWorld: { x: number; y: number };
+    origWidth: number;
+    origHeight: number;
+  } | null>(null);
   const transformRef = useRef(transform);
   const docRef = useRef(doc);
   const editingIdRef = useRef<string | null>(null);
@@ -387,8 +411,14 @@ export default function CanvasClient() {
 
     const trimmed = editingTextRef.current.trim();
     if (node.text === trimmed) return;
+
+    // Grow the card to fit what was written. Growing only, never shrinking, so
+    // a card you deliberately made bigger stays that way.
+    const needed = measureTextHeight(trimmed, node.width);
+    const height = Math.max(node.height, needed);
+
     const nodes = current.nodes.map((n) =>
-      n.id === id ? ({ ...n, text: trimmed } as CanvasNode) : n,
+      n.id === id ? ({ ...n, text: trimmed, height } as CanvasNode) : n,
     );
     applyDoc({ ...current, nodes });
   }, [applyDoc]);
@@ -404,6 +434,24 @@ export default function CanvasClient() {
     (e: React.PointerEvent<HTMLDivElement>) => {
       const target = e.target as HTMLElement;
       if (target.closest(`.${styles.nodeEditor}`) || target.closest(`.${styles.chrome}`)) return;
+
+      // The resize grip is the one place where pen and finger do the same
+      // thing, so it is checked before either input branch.
+      const grip = target.closest<HTMLElement>("[data-resize-handle]");
+      if (grip) {
+        const nodeId = grip.dataset.resizeHandle;
+        const node = nodeId ? docRef.current.nodes.find((n) => n.id === nodeId) : undefined;
+        if (node) {
+          resizeRef.current = {
+            pointerId: e.pointerId,
+            nodeId: node.id,
+            startWorld: toWorld(e.clientX, e.clientY),
+            origWidth: node.width,
+            origHeight: node.height,
+          };
+          return;
+        }
+      }
 
       if (e.pointerType === "touch") {
         if (isPenPriority()) return;
@@ -468,6 +516,20 @@ export default function CanvasClient() {
 
   const onPointerMove = useCallback(
     (e: React.PointerEvent<HTMLDivElement>) => {
+      const resize = resizeRef.current;
+      if (resize && resize.pointerId === e.pointerId) {
+        const world = toWorld(e.clientX, e.clientY);
+        const width = Math.max(MIN_CARD.width, resize.origWidth + (world.x - resize.startWorld.x));
+        const height = Math.max(MIN_CARD.height, resize.origHeight + (world.y - resize.startWorld.y));
+        setDoc((doc0) => ({
+          ...doc0,
+          nodes: doc0.nodes.map((n) =>
+            n.id === resize.nodeId ? ({ ...n, width, height } as CanvasNode) : n,
+          ),
+        }));
+        return;
+      }
+
       if (e.pointerType === "touch") {
         if (isPenPriority()) return;
         if (!touchesRef.current.has(e.pointerId)) return;
@@ -583,8 +645,26 @@ export default function CanvasClient() {
     if (touchesRef.current.size === 0) panRef.current = null;
   }, []);
 
+  /** Round a finished resize and put it on the undo stack as one entry. */
+  const finishResize = useCallback((pointerId: number): boolean => {
+    const resize = resizeRef.current;
+    if (!resize || resize.pointerId !== pointerId) return false;
+    resizeRef.current = null;
+    setDoc((doc0) => ({
+      ...doc0,
+      nodes: doc0.nodes.map((n) =>
+        n.id === resize.nodeId
+          ? ({ ...n, width: Math.round(n.width), height: Math.round(n.height) } as CanvasNode)
+          : n,
+      ),
+    }));
+    setDragCommit((t) => t + 1);
+    return true;
+  }, []);
+
   const onPointerUp = useCallback(
     (e: React.PointerEvent<HTMLDivElement>) => {
+      if (finishResize(e.pointerId)) return;
       if (e.pointerType === "touch") {
         endTouch(e.pointerId);
         return;
@@ -597,11 +677,12 @@ export default function CanvasClient() {
       clearInk();
       applyGesture(stroke.points);
     },
-    [applyGesture, clearInk, endTouch],
+    [applyGesture, clearInk, endTouch, finishResize],
   );
 
   const onPointerCancel = useCallback(
     (e: React.PointerEvent<HTMLDivElement>) => {
+      if (finishResize(e.pointerId)) return;
       if (e.pointerType === "touch") {
         endTouch(e.pointerId);
         return;
@@ -609,7 +690,7 @@ export default function CanvasClient() {
       strokeRef.current = null;
       clearInk();
     },
-    [clearInk, endTouch],
+    [clearInk, endTouch, finishResize],
   );
 
   const onWheel = useCallback((e: React.WheelEvent<HTMLDivElement>) => {
@@ -750,17 +831,101 @@ export default function CanvasClient() {
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }, [record]);
 
-  const newCanvas = useCallback(() => {
-    const next = newRecord("Untitled map");
+  // ─── CANVAS LIBRARY ───────────────────────────────────────────────────────
+  //
+  // Autosave is debounced, so anything that leaves the current canvas has to
+  // flush first. Without this, switching maps within a second of an edit lost
+  // that edit — the exact failure a library is supposed to prevent.
+  const flushSave = useCallback(async () => {
+    if (!record) return;
+    await putCanvas({ ...record, doc: docRef.current, updated: new Date().toISOString() }).catch(
+      () => showToast("Could not save locally."),
+    );
+  }, [record, showToast]);
+
+  const refreshLibrary = useCallback(async () => {
+    try {
+      setLibrary(await listCanvases());
+    } catch {
+      showToast("Could not read the map library.");
+    }
+  }, [showToast]);
+
+  const openLibrary = useCallback(async () => {
+    await flushSave();
+    await refreshLibrary();
+    setRenamingId(null);
+    setConfirmDeleteId(null);
+    setLibraryOpen(true);
+  }, [flushSave, refreshLibrary]);
+
+  /** Make `next` the open canvas. Callers must have flushed the current one. */
+  const adopt = useCallback((next: CanvasRecord) => {
     setRecord(next);
     setDoc(next.doc);
     setHistory(initHistory(next.doc));
     setSelectedId(null);
     setEditingId(null);
-    setTransform({ x: 0, y: 0, k: 1 });
     rememberLastOpened(next.id);
-    void putCanvas(next);
   }, []);
+
+  const switchTo = useCallback(
+    async (id: string) => {
+      await flushSave();
+      const next = await getCanvas(id);
+      if (!next) {
+        showToast("That map is no longer there.");
+        await refreshLibrary();
+        return;
+      }
+      adopt(next);
+      setLibraryOpen(false);
+      requestAnimationFrame(zoomToFit);
+    },
+    [adopt, flushSave, refreshLibrary, showToast, zoomToFit],
+  );
+
+  const removeCanvas = useCallback(
+    async (id: string) => {
+      await deleteCanvas(id);
+      const remaining = await listCanvases();
+      setLibrary(remaining);
+      setConfirmDeleteId(null);
+
+      // Deleting the open map has to leave something open.
+      if (record?.id === id) {
+        const next = remaining[0] ?? newRecord("Untitled map");
+        if (!remaining.length) await putCanvas(next);
+        adopt(next);
+        requestAnimationFrame(zoomToFit);
+      }
+      showToast("Map deleted.");
+    },
+    [adopt, record, showToast, zoomToFit],
+  );
+
+  const commitRename = useCallback(async () => {
+    const id = renamingId;
+    if (!id) return;
+    const name = renameText.trim() || "Untitled map";
+    const target = await getCanvas(id);
+    if (target) await putCanvas({ ...target, name });
+    if (record?.id === id) setRecord((r) => (r ? { ...r, name } : r));
+    setRenamingId(null);
+    await refreshLibrary();
+  }, [record, refreshLibrary, renameText, renamingId]);
+
+  const newCanvas = useCallback(async () => {
+    // Flush first: "New" used to walk away from unsaved edits, and with no
+    // library to find the old map in, that read as losing the work.
+    await flushSave();
+    const next = newRecord("Untitled map");
+    await putCanvas(next);
+    adopt(next);
+    setTransform({ x: 0, y: 0, k: 1 });
+    setLibraryOpen(false);
+    await refreshLibrary();
+  }, [adopt, flushSave, refreshLibrary]);
 
   // ─── KEYBOARD ─────────────────────────────────────────────────────────────
 
@@ -881,6 +1046,13 @@ export default function CanvasClient() {
                 }}
               >
                 {accent ? <span className={styles.nodeStripe} style={{ background: accent }} /> : null}
+                {selectedId === node.id && !isEditing ? (
+                  <span
+                    className={styles.resizeHandle}
+                    data-resize-handle={node.id}
+                    aria-label="Resize card"
+                  />
+                ) : null}
                 {isEditing ? (
                   <textarea
                     ref={textareaRef}
@@ -916,7 +1088,10 @@ export default function CanvasClient() {
           aria-label="Canvas name"
         />
         <div className={styles.topActions}>
-          <button className={styles.button} onClick={newCanvas}>
+          <button className={styles.button} onClick={() => void openLibrary()}>
+            Maps
+          </button>
+          <button className={styles.button} onClick={() => void newCanvas()}>
             New
           </button>
           <button className={styles.button} onClick={() => fileInputRef.current?.click()}>
@@ -1009,6 +1184,102 @@ export default function CanvasClient() {
         </div>
       ) : null}
 
+      {libraryOpen ? (
+        <div className={styles.sheetBackdrop} onClick={() => setLibraryOpen(false)}>
+          <div
+            className={`${styles.chrome} ${styles.sheet}`}
+            onClick={(e) => e.stopPropagation()}
+            role="dialog"
+            aria-label="Your maps"
+          >
+            <header className={styles.sheetHeader}>
+              <h2 className={styles.sheetTitle}>Your maps</h2>
+              <button className={styles.button} onClick={() => setLibraryOpen(false)}>
+                Done
+              </button>
+            </header>
+
+            <ul className={styles.mapList}>
+              {library.map((item) => {
+                const isCurrent = item.id === record?.id;
+                const count = item.doc.nodes.length;
+                return (
+                  <li key={item.id} className={styles.mapRow} data-map-id={item.id}>
+                    {renamingId === item.id ? (
+                      <input
+                        className={styles.renameInput}
+                        value={renameText}
+                        autoFocus
+                        onChange={(e) => setRenameText(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") void commitRename();
+                          if (e.key === "Escape") setRenamingId(null);
+                        }}
+                        aria-label="Map name"
+                      />
+                    ) : (
+                      <button
+                        className={styles.mapOpen}
+                        onClick={() => void switchTo(item.id)}
+                        disabled={isCurrent}
+                      >
+                        <span className={styles.mapName}>
+                          {item.name}
+                          {isCurrent ? <span className={styles.mapBadge}>open</span> : null}
+                        </span>
+                        <span className={styles.mapMeta}>
+                          {count} card{count === 1 ? "" : "s"} · {relativeTime(item.updated)}
+                        </span>
+                      </button>
+                    )}
+
+                    <div className={styles.mapActions}>
+                      {renamingId === item.id ? (
+                        <button className={styles.button} onClick={() => void commitRename()}>
+                          Save
+                        </button>
+                      ) : (
+                        <button
+                          className={styles.button}
+                          onClick={() => {
+                            setRenamingId(item.id);
+                            setRenameText(item.name);
+                            setConfirmDeleteId(null);
+                          }}
+                        >
+                          Rename
+                        </button>
+                      )}
+                      {confirmDeleteId === item.id ? (
+                        <button
+                          className={`${styles.button} ${styles.danger}`}
+                          onClick={() => void removeCanvas(item.id)}
+                        >
+                          Really delete
+                        </button>
+                      ) : (
+                        <button
+                          className={`${styles.button} ${styles.danger}`}
+                          onClick={() => setConfirmDeleteId(item.id)}
+                        >
+                          Delete
+                        </button>
+                      )}
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+
+            <footer className={styles.sheetFooter}>
+              <button className={styles.button} onClick={() => void newCanvas()}>
+                New map
+              </button>
+            </footer>
+          </div>
+        </div>
+      ) : null}
+
       <div className={styles.toasts}>
         {toasts.map((t) => (
           <div key={t.id} className={styles.toast}>
@@ -1021,6 +1292,56 @@ export default function CanvasClient() {
 }
 
 // ─── HELPERS ────────────────────────────────────────────────────────────────
+
+/**
+ * Height a card needs to show all of its text at a given width.
+ *
+ * Measured in a real off-screen element rather than estimated, because line
+ * wrapping depends on the actual font, and a card that clips its own text is
+ * the fastest way to lose an idea you just wrote down.
+ */
+let measureEl: HTMLDivElement | null = null;
+
+function measureTextHeight(text: string, width: number): number {
+  if (typeof document === "undefined") return 0;
+  if (!measureEl) {
+    measureEl = document.createElement("div");
+    measureEl.setAttribute("aria-hidden", "true");
+    Object.assign(measureEl.style, {
+      position: "absolute",
+      left: "-99999px",
+      top: "0",
+      visibility: "hidden",
+      whiteSpace: "pre-wrap",
+      overflowWrap: "anywhere",
+      fontSize: "15px",
+      lineHeight: "1.35",
+      fontFamily: getComputedStyle(document.body).fontFamily,
+    });
+    document.body.appendChild(measureEl);
+  }
+  const content = width - CARD_PADDING_X * 2 - CARD_BORDER * 2;
+  measureEl.style.width = `${Math.max(20, content)}px`;
+  // A trailing newline needs a line box of its own, which an empty text node
+  // would not produce.
+  measureEl.textContent = text.length ? text : " ";
+  return measureEl.offsetHeight + CARD_PADDING_Y * 2 + CARD_BORDER * 2;
+}
+
+/** "3 minutes ago" — enough to tell two maps apart at a glance. */
+function relativeTime(iso: string): string {
+  const then = new Date(iso).getTime();
+  if (!Number.isFinite(then)) return "";
+  const seconds = Math.max(0, Math.round((Date.now() - then) / 1000));
+  if (seconds < 60) return "just now";
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours} hr ago`;
+  const days = Math.round(hours / 24);
+  if (days < 30) return `${days} day${days === 1 ? "" : "s"} ago`;
+  return new Date(then).toLocaleDateString();
+}
 
 function clamp(v: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, v));

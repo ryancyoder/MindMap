@@ -14,6 +14,7 @@ node scripts/verify-gestures.mjs          # the pen model
 node scripts/verify-pen-input.mjs         # pen event capture
 node scripts/verify-recognizer.mjs        # realistic hand-drawn shapes
 node scripts/verify-touch.mjs             # pan, pinch, dragging cards
+node scripts/verify-library.mjs           # card sizing and the map library
 node scripts/verify-roundtrip.mjs         # .canvas fidelity
 ```
 
@@ -62,6 +63,11 @@ hardware: the palm filter rejected any contact wider than 45px, and iOS reports
 an ordinary fingertip on an iPad at 40-60px, so pan and pinch did nothing at
 all — while synthetic tests passed, because a synthetic PointerEvent defaults
 to `width: 1`. The 50px-wide contact case is the one that matters; keep it.
+
+`verify-library.mjs` covers card sizing and the map library. Its important
+checks are the losing ones — that "New" does not strand the map you were on,
+that switching maps keeps an edit made a moment earlier (autosave is debounced,
+so that is a real race), and that deleting the open map leaves something open.
 
 The lesson generalizes three times over: when a check drives the app through a
 different input path than the user does, or feeds it idealized input the user

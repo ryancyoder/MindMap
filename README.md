@@ -34,12 +34,19 @@ handwrite into it with the Pencil and never see a keyboard.
 Undo is ⌘Z, and every gesture is undoable — which is the honest answer to a
 recognizer that occasionally reads a stroke wrong.
 
+Cards grow to fit what you write, so a long thought is never clipped. Drag the
+corner grip on a selected card to size it by hand; a card you enlarge stays
+that way.
+
 ## Files
 
-Maps autosave to the browser on the device. **Open** loads a `.canvas` file
-from Files or iCloud Drive; **Save .canvas** downloads the current map back
-out. Files from other apps round-trip without losing their data — including
-attributes MindMap itself doesn't use.
+Maps autosave to the browser on the device, and **Maps** lists everything
+you've made — switch, rename or delete from there. **New** starts a fresh map
+without abandoning the one you were on.
+
+**Open** loads a `.canvas` file from Files or iCloud Drive; **Save .canvas**
+downloads the current map back out. Files from other apps round-trip without
+losing their data — including attributes MindMap itself doesn't use.
 
 ## Running it
 

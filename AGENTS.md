@@ -49,7 +49,9 @@ selects a mode; the shape of the stroke says what they meant:
 | short dab | select; dab again to edit |
 
 Fingers do the rest: one finger drags a card if it starts on one and pans the
-canvas if it doesn't, two fingers pinch-zoom, and a finger tap selects.
+canvas if it doesn't, two fingers pinch-zoom, and a finger tap selects. The
+grip on a selected card's corner resizes it — the only control where pen and
+finger do the same thing, so it is checked before either input branch.
 
 **Pen draws, finger manipulates.** That split is what makes palm rejection
 free: a resting palm is a touch pointer, and touch never draws. `pointerType`
@@ -76,6 +78,28 @@ reintroduce corner counting.
 
 Raw points are what get inked; recognition sees a smoothed, simplified copy.
 Keep it that way — smoothing the ink would make strokes feel laggy and dead.
+
+## Card sizing
+
+Cards grow to fit their text when an edit is committed, and never shrink — so a
+card you deliberately enlarged stays enlarged. Height comes from
+`measureTextHeight`, which lays the text out in a real off-screen element
+rather than estimating, because wrapping depends on the actual font.
+
+`CARD_PADDING_X/Y` and `CARD_BORDER` mirror `canvas.module.css`. **If you change
+the card's padding or border in CSS, change them here too** — they were 3px
+apart once and that was enough to clip a whole wrapped line on a narrow card.
+
+## The map library
+
+IndexedDB holds every map; `voicemap`-style last-opened lives in localStorage.
+Autosave is debounced, so **anything that leaves the current canvas must call
+`flushSave()` first** — `openLibrary`, `switchTo`, and `newCanvas` all do.
+Without it, switching maps within a second of an edit silently lost that edit,
+which is the exact failure the library exists to prevent.
+
+Deleting the open map must leave another one open, creating a blank one if it
+was the last.
 
 ## Rules that are load-bearing
 

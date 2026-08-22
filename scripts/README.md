@@ -12,6 +12,7 @@ npm run build && npm run start &          # serve the app on :3000
 
 node scripts/verify-gestures.mjs          # the pen model
 node scripts/verify-pen-input.mjs         # pen event capture
+node scripts/verify-recognizer.mjs        # realistic hand-drawn shapes
 node scripts/verify-roundtrip.mjs         # .canvas fidelity
 ```
 
@@ -47,8 +48,17 @@ dead on an iPad while every mouse-driven check passed. This script dispatches
 list really is empty, so a pass proves the fallback works rather than proving
 the environment happened to be friendly.
 
-The lesson generalizes: when a check drives the app through a different input
-path than the user does, a green suite says nothing about the user's path.
+`verify-recognizer.mjs` covers stroke *shape*, and exists for the same reason
+in a different disguise. The earlier checks drew mathematically perfect
+circles. A real Apple Pencil records hand tremor, and the recognizer counted
+sharp corners to spot a scribble — so tremor on an ordinary circle registered
+fourteen corners, the stroke was classified as crossing-out, and a crossing-out
+over empty canvas did nothing at all. Ink appeared and no card did. The strokes
+here wobble, leave gaps, double back, and run short of samples.
+
+The lesson generalizes twice over: when a check drives the app through a
+different input path than the user does, or feeds it idealized input the user
+cannot produce, a green suite says nothing about the user's experience.
 
 None of these cover palm rejection or pressure, which need real touch and pen
 hardware — test those on an iPad by hand.

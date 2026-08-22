@@ -49,6 +49,34 @@ export function signedArea(pts: Pt[]): number {
   return sum / 2;
 }
 
+/**
+ * Moving-average smoothing. Apple Pencil faithfully records hand tremor, and
+ * tremor at the sample level reads as dozens of sharp direction changes — which
+ * is indistinguishable from a scribble unless it is filtered out first. Endpoints
+ * are preserved exactly, because closure detection depends on them.
+ */
+export function smooth(pts: Pt[], window = 2): Pt[] {
+  if (pts.length < 5) return pts.slice();
+  const out: Pt[] = [];
+  for (let i = 0; i < pts.length; i++) {
+    if (i === 0 || i === pts.length - 1) {
+      out.push(pts[i]);
+      continue;
+    }
+    const lo = Math.max(0, i - window);
+    const hi = Math.min(pts.length - 1, i + window);
+    let x = 0;
+    let y = 0;
+    for (let j = lo; j <= hi; j++) {
+      x += pts[j].x;
+      y += pts[j].y;
+    }
+    const n = hi - lo + 1;
+    out.push({ x: x / n, y: y / n, p: pts[i].p, t: pts[i].t });
+  }
+  return out;
+}
+
 /** Ramer–Douglas–Peucker. Turn 400 raw samples into the ~10 that carry shape. */
 export function simplify(pts: Pt[], tolerance: number): Pt[] {
   if (pts.length < 3) return pts.slice();
@@ -104,20 +132,6 @@ export function totalTurning(pts: Pt[]): number {
     total += Math.abs(delta);
   }
   return total;
-}
-
-/** How many times the stroke doubles back on itself (turns sharper than ~110°). */
-export function reversalCount(pts: Pt[]): number {
-  if (pts.length < 3) return 0;
-  let count = 0;
-  for (let i = 1; i < pts.length - 1; i++) {
-    const a = Math.atan2(pts[i].y - pts[i - 1].y, pts[i].x - pts[i - 1].x);
-    const b = Math.atan2(pts[i + 1].y - pts[i].y, pts[i + 1].x - pts[i].x);
-    let delta = Math.abs(b - a);
-    while (delta > Math.PI) delta = Math.abs(delta - 2 * Math.PI);
-    if (delta > (110 * Math.PI) / 180) count++;
-  }
-  return count;
 }
 
 export function pointInRect(p: { x: number; y: number }, r: Rect, pad = 0): boolean {
@@ -238,4 +252,16 @@ export function sideNormal(side: Side): P2 {
 
 export function snap(value: number, grid: number): number {
   return Math.round(value / grid) * grid;
+}
+
+/**
+ * Isoperimetric quotient: 4·π·area / length². A perfect circle scores 1, a
+ * hand-drawn one still scores high, and a scribble — which covers distance
+ * without enclosing anything — scores near zero. This separates "went around
+ * something" from "crossed it out" far more reliably than counting corners,
+ * because tremor adds corners but does not add enclosed area.
+ */
+export function compactness(enclosedArea: number, length: number): number {
+  if (length <= 0) return 0;
+  return (4 * Math.PI * enclosedArea) / (length * length);
 }

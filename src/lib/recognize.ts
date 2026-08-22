@@ -20,13 +20,15 @@
 
 import {
   bbox,
+  compactness,
   dist,
   pathLength,
   pointInRect,
-  reversalCount,
   signedArea,
   simplify,
+  smooth,
   strokeCrossesRect,
+  totalTurning,
   type Pt,
   type Rect,
 } from "./geometry";
@@ -39,19 +41,27 @@ export const RECOGNIZER = {
   /** How close to a node counts as "on" it, for starting/ending a stroke. */
   nodeHitPadding: 8,
   /** A loop's endpoints must land this close, relative to its own size. */
-  loopClosureRatio: 0.28,
+  loopClosureRatio: 0.5,
+  /** ...or it may stay open, if it swept most of the way around. */
+  loopMinTurning: 1.3 * Math.PI,
   /** Enclosed area below this is a squiggle, not a shape. */
   loopMinArea: 900,
-  /** Doubling back this many times reads as a scribble-out. */
-  scribbleMinReversals: 4,
   /** Scribbles cover far more distance than their bounding box diagonal. */
   scribbleMinLengthRatio: 2.2,
+  /**
+   * ...but they also enclose almost nothing. Hand tremor adds corners without
+   * adding enclosed area, so this is what keeps a shaky circle out of the
+   * scribble branch. A hand-drawn circle sits near 0.8; a scribble near 0.02.
+   */
+  scribbleMaxCompactness: 0.2,
+  /** A loop has to actually enclose its area, not merely double back. */
+  loopMinCompactness: 0.15,
   /** A branch flick must travel mostly in one direction, not curl back. */
   branchMinDirectness: 0.55,
   /** New nodes never come out smaller than this. */
   minNodeSize: { width: 120, height: 60 },
   /** Simplification tolerance before shape analysis. */
-  simplifyTolerance: 2.5,
+  simplifyTolerance: 3.5,
 } as const;
 
 export type Gesture =
@@ -103,15 +113,37 @@ export function recognize(raw: Pt[], nodes: CanvasNode[]): Gesture {
     return { kind: "tap", at: { x: first.x, y: first.y }, nodeId: hit?.id ?? null };
   }
 
-  const pts = simplify(raw, RECOGNIZER.simplifyTolerance);
+  // Smooth before analysing shape. The Pencil records hand tremor faithfully,
+  // and unsmoothed tremor produced a dozen-plus fake direction reversals on an
+  // ordinary hand-drawn circle — which read as a scribble and silently did
+  // nothing. Ink still comes from the raw points; only recognition sees these.
+  const pts = simplify(smooth(raw), RECOGNIZER.simplifyTolerance);
   const bounds = bbox(raw);
   const diagonal = Math.hypot(bounds.width, bounds.height) || 1;
+  const area = Math.abs(signedArea(pts));
+  const shapeCompactness = compactness(area, length);
 
-  // 2. Scribble — lots of doubling back over a small area.
-  const reversals = reversalCount(pts);
-  if (reversals >= RECOGNIZER.scribbleMinReversals && length / diagonal >= RECOGNIZER.scribbleMinLengthRatio) {
+  // 2. Scribble — covers a lot of ground while enclosing almost nothing.
+  //
+  // This used to count sharp corners, which was wrong twice over: hand tremor
+  // adds corners to a circle, and smoothing removes them from a genuine
+  // zigzag, so the same scribble registered 6 corners at one size and 0 at
+  // another. Compactness has neither problem — it is scale-invariant, and it
+  // measures the thing that actually distinguishes the two gestures. A
+  // hand-drawn circle scores around 0.8; a scribble scores 0.00.
+  //
+  // The length ratio is what protects connectors: a stroke between two cards
+  // also encloses nothing, but it travels in one direction rather than
+  // doubling back over its own bounding box.
+  if (
+    length / diagonal >= RECOGNIZER.scribbleMinLengthRatio &&
+    shapeCompactness < RECOGNIZER.scribbleMaxCompactness
+  ) {
     const hitIds = nodes.filter((n) => strokeCrossesRect(raw, nodeRect(n))).map((n) => n.id);
-    return { kind: "scribble", nodeIds: hitIds, strokePoints: raw };
+    // A scribble over empty canvas deleted nothing and said nothing. Rather
+    // than vanish, fall through so it is judged on its shape like any other
+    // stroke and the user gets either a card or an explanation.
+    if (hitIds.length > 0) return { kind: "scribble", nodeIds: hitIds, strokePoints: raw };
   }
 
   const startNode = nodeAt(nodes, first, RECOGNIZER.nodeHitPadding);
@@ -137,10 +169,13 @@ export function recognize(raw: Pt[], nodes: CanvasNode[]): Gesture {
     }
   }
 
-  // 5. Loop — ends near where it started, and encloses real area.
+  // 5. Loop — encloses real area, and either closes up or sweeps most of the
+  // way around. The turning test is what lets a circle with an open gap still
+  // count, which is how people actually draw them in a hurry.
   const closure = dist(first, last) / diagonal;
-  const area = Math.abs(signedArea(pts));
-  if (closure <= RECOGNIZER.loopClosureRatio && area >= RECOGNIZER.loopMinArea) {
+  const turning = totalTurning(pts);
+  const wentAround = closure <= RECOGNIZER.loopClosureRatio || turning >= RECOGNIZER.loopMinTurning;
+  if (wentAround && area >= RECOGNIZER.loopMinArea && shapeCompactness >= RECOGNIZER.loopMinCompactness) {
     return { kind: "loop", rect: rectFromBounds(bounds) };
   }
 

@@ -56,6 +56,18 @@ out for a beat around each stroke so a palm landing late cannot pan mid-word.
 Recognizer thresholds live in one exported `RECOGNIZER` object in
 `src/lib/recognize.ts`. Tune there, not at call sites.
 
+**Shape is judged by compactness (`4·π·area / length²`), not by counting
+corners.** A hand-drawn circle scores around 0.8; a scribble scores 0.00. An
+earlier version counted sharp direction changes, which failed in both
+directions: hand tremor added corners to circles, and smoothing removed them
+from genuine zigzags, so the same scribble registered six corners at one size
+and zero at another. Compactness is scale-invariant and measures the property
+that actually separates "went around something" from "crossed it out". Do not
+reintroduce corner counting.
+
+Raw points are what get inked; recognition sees a smoothed, simplified copy.
+Keep it that way — smoothing the ink would make strokes feel laggy and dead.
+
 ## Rules that are load-bearing
 
 1. **Unknown keys survive.** `parseCanvas`/`serializeCanvas` preserve
@@ -85,6 +97,11 @@ npm run build       # next build (Turbopack)
 There is no unit test framework. Behavior is verified by driving the real app
 in a browser — see `scripts/README.md`. Run those after any change to the
 recognizer or the format module.
+
+Two bugs shipped past a fully green suite, both because the checks fed the app
+something the user never produces: trusted mouse events instead of pen events,
+and geometrically perfect circles instead of shaky ones. When adding a check,
+ask what it feeds the app and whether a hand could produce it.
 
 ## Status
 

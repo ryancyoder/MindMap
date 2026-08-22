@@ -16,6 +16,7 @@ node scripts/verify-recognizer.mjs        # realistic hand-drawn shapes
 node scripts/verify-touch.mjs             # pan, pinch, dragging cards
 node scripts/verify-library.mjs           # card sizing and the map library
 node scripts/verify-paste.mjs             # pasting and copying map JSON
+node scripts/verify-doubletap.mjs         # double-tap to zoom
 node scripts/verify-roundtrip.mjs         # .canvas fidelity
 ```
 
@@ -74,6 +75,12 @@ so that is a real race), and that deleting the open map leaves something open.
 ones: malformed input has to say so rather than destroy the open map, a
 partly-broken file has to open with what survived and report what it dropped,
 and replacing a map has to stay one undo away.
+
+`verify-doubletap.mjs` covers double-tap zoom, and most of its checks are
+negative: taps that are too slow, too far apart, on different targets, or that
+followed a pan must NOT pair. A gesture recognizer is judged by what it
+declines as much as by what it catches — an over-eager double-tap would fire
+while you were simply working.
 
 The lesson generalizes three times over: when a check drives the app through a
 different input path than the user does, or feeds it idealized input the user

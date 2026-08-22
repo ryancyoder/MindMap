@@ -78,6 +78,20 @@ const CARD_BORDER = 1.5;
 /** Nothing may be resized smaller than this and stay usable. */
 const MIN_CARD = { width: 90, height: 48 };
 
+/** Two taps closer together than this, and nearer than DOUBLE_TAP_PX, pair up. */
+const DOUBLE_TAP_MS = 320;
+const DOUBLE_TAP_PX = 32;
+
+/** A finger that travels further than this was a drag, not a tap. */
+const TAP_SLOP_PX = 8;
+
+/** Framing for a card zoomed into: breathing room, and a sane ceiling. */
+const CARD_ZOOM_PAD = 90;
+const CARD_ZOOM_MAX = 2.2;
+
+/** Programmatic zooms are animated; direct manipulation never is. */
+const ZOOM_ANIM_MS = 260;
+
 const MIN_ZOOM = 0.15;
 const MAX_ZOOM = 4;
 
@@ -116,11 +130,23 @@ export default function CanvasClient() {
   const touchesRef = useRef<Map<number, { x: number; y: number }>>(new Map());
   const penUntilRef = useRef(0);
   const pinchRef = useRef<{ dist: number; cx: number; cy: number } | null>(null);
-  const panRef = useRef<{ x: number; y: number } | null>(null);
+  const panRef = useRef<{
+    pointerId: number;
+    x: number;
+    y: number;
+    startX: number;
+    startY: number;
+    moved: boolean;
+  } | null>(null);
+  const lastTapRef = useRef<{ t: number; x: number; y: number; nodeId: string | null } | null>(null);
+  /** The view to return to when double-tapping away from a card. */
+  const zoomBackRef = useRef<Transform | null>(null);
+  const animRef = useRef<number | null>(null);
   const nodeDragRef = useRef<{
     pointerId: number;
     nodeId: string;
     lastWorld: { x: number; y: number };
+    lastScreen: { x: number; y: number };
     moved: boolean;
   } | null>(null);
   const lastPenAtRef = useRef(0);
@@ -426,6 +452,85 @@ export default function CanvasClient() {
     applyDoc({ ...current, nodes });
   }, [applyDoc]);
 
+  /** Stop any in-flight programmatic zoom, so direct manipulation always wins. */
+  const cancelAnim = useCallback(() => {
+    if (animRef.current !== null) {
+      cancelAnimationFrame(animRef.current);
+      animRef.current = null;
+    }
+  }, []);
+
+  /**
+   * Ease the view to a target. Only programmatic moves animate — panning and
+   * pinching must track the finger exactly, and a transition there would feel
+   * like lag rather than polish.
+   */
+  const animateTransform = useCallback(
+    (to: Transform) => {
+      cancelAnim();
+      const from = transformRef.current;
+      const start = performance.now();
+
+      const step = (now: number) => {
+        const t = Math.min(1, (now - start) / ZOOM_ANIM_MS);
+        // easeOutCubic: quick to leave, gentle to arrive.
+        const e = 1 - Math.pow(1 - t, 3);
+        setTransform({
+          x: from.x + (to.x - from.x) * e,
+          y: from.y + (to.y - from.y) * e,
+          k: from.k + (to.k - from.k) * e,
+        });
+        animRef.current = t < 1 ? requestAnimationFrame(step) : null;
+      };
+      animRef.current = requestAnimationFrame(step);
+    },
+    [cancelAnim],
+  );
+
+  useEffect(() => cancelAnim, [cancelAnim]);
+
+  /** The view that frames one card comfortably. */
+  const transformForCard = useCallback((node: CanvasNode): Transform | null => {
+    const surface = surfaceRef.current;
+    if (!surface) return null;
+    const rect = surface.getBoundingClientRect();
+    const k = clamp(
+      Math.min(
+        rect.width / (node.width + CARD_ZOOM_PAD * 2),
+        rect.height / (node.height + CARD_ZOOM_PAD * 2),
+      ),
+      MIN_ZOOM,
+      CARD_ZOOM_MAX,
+    );
+    return {
+      k,
+      x: rect.width / 2 - (node.x + node.width / 2) * k,
+      y: rect.height / 2 - (node.y + node.height / 2) * k,
+    };
+  }, []);
+
+  const fitTransform = useCallback((): Transform | null => {
+    const surface = surfaceRef.current;
+    const nodes = docRef.current.nodes;
+    if (!surface || nodes.length === 0) return { x: 0, y: 0, k: 1 };
+    const rect = surface.getBoundingClientRect();
+    const minX = Math.min(...nodes.map((n) => n.x));
+    const minY = Math.min(...nodes.map((n) => n.y));
+    const maxX = Math.max(...nodes.map((n) => n.x + n.width));
+    const maxY = Math.max(...nodes.map((n) => n.y + n.height));
+    const pad = 80;
+    const k = clamp(
+      Math.min(rect.width / (maxX - minX + pad * 2), rect.height / (maxY - minY + pad * 2)),
+      MIN_ZOOM,
+      1.5,
+    );
+    return {
+      k,
+      x: rect.width / 2 - ((minX + maxX) / 2) * k,
+      y: rect.height / 2 - ((minY + maxY) / 2) * k,
+    };
+  }, []);
+
   // ─── POINTER ROUTING ──────────────────────────────────────────────────────
   //
   // Pen draws. Touch navigates. That single split is what makes palm rejection
@@ -440,6 +545,8 @@ export default function CanvasClient() {
 
       // The resize grip is the one place where pen and finger do the same
       // thing, so it is checked before either input branch.
+      cancelAnim();
+
       const grip = target.closest<HTMLElement>("[data-resize-handle]");
       if (grip) {
         const nodeId = grip.dataset.resizeHandle;
@@ -471,11 +578,24 @@ export default function CanvasClient() {
           const world = toWorld(e.clientX, e.clientY);
           const hit = nodeAt(docRef.current.nodes, world);
           if (hit) {
-            nodeDragRef.current = { pointerId: e.pointerId, nodeId: hit.id, lastWorld: world, moved: false };
+            nodeDragRef.current = {
+              pointerId: e.pointerId,
+              nodeId: hit.id,
+              lastWorld: world,
+              lastScreen: { x: e.clientX, y: e.clientY },
+              moved: false,
+            };
             panRef.current = null;
           } else {
             nodeDragRef.current = null;
-            panRef.current = { x: e.clientX, y: e.clientY };
+            panRef.current = {
+              pointerId: e.pointerId,
+              x: e.clientX,
+              y: e.clientY,
+              startX: e.clientX,
+              startY: e.clientY,
+              moved: false,
+            };
           }
         } else if (touches.length === 2) {
           // A second finger means zoom. Leave the card wherever it got to.
@@ -514,7 +634,7 @@ export default function CanvasClient() {
         // Non-fatal: window-level events still complete the stroke.
       }
     },
-    [commitEditing, editingId, toWorld],
+    [cancelAnim, commitEditing, editingId, toWorld],
   );
 
   const onPointerMove = useCallback(
@@ -558,9 +678,14 @@ export default function CanvasClient() {
         }
 
         if (touches.length === 1 && panRef.current) {
-          const dx = e.clientX - panRef.current.x;
-          const dy = e.clientY - panRef.current.y;
-          panRef.current = { x: e.clientX, y: e.clientY };
+          const pan = panRef.current;
+          const dx = e.clientX - pan.x;
+          const dy = e.clientY - pan.y;
+          pan.x = e.clientX;
+          pan.y = e.clientY;
+          if (Math.hypot(e.clientX - pan.startX, e.clientY - pan.startY) > TAP_SLOP_PX) {
+            pan.moved = true;
+          }
           setTransform((t) => ({ ...t, x: t.x + dx, y: t.y + dy }));
         } else if (touches.length === 2 && pinchRef.current) {
           const nextDist = dist(touches[0], touches[1]);
@@ -619,6 +744,50 @@ export default function CanvasClient() {
     [drawInk, toWorld],
   );
 
+  /**
+   * A finger that landed and lifted without travelling. Handles selection, and
+   * pairs with a previous tap to make a double-tap.
+   *
+   * Double-tap is a finger gesture only. The pen already uses a second tap to
+   * open a card for text, and taking that over would cost handwriting to buy
+   * navigation — a bad trade on a device where the pen is the point.
+   */
+  const handleTap = useCallback(
+    (nodeId: string | null, at: { x: number; y: number }) => {
+      const now = performance.now();
+      const last = lastTapRef.current;
+      const paired =
+        last !== null &&
+        now - last.t < DOUBLE_TAP_MS &&
+        Math.hypot(at.x - last.x, at.y - last.y) < DOUBLE_TAP_PX &&
+        last.nodeId === nodeId;
+
+      if (paired) {
+        lastTapRef.current = null;
+        if (nodeId) {
+          const node = docRef.current.nodes.find((n) => n.id === nodeId);
+          const target = node ? transformForCard(node) : null;
+          if (target) {
+            // Remember the overview only on the way in, so hopping between
+            // cards still returns to where you actually started.
+            if (!zoomBackRef.current) zoomBackRef.current = transformRef.current;
+            animateTransform(target);
+          }
+          return;
+        }
+        // Away from any card: back to where you were, or the whole map.
+        const back = zoomBackRef.current ?? fitTransform();
+        zoomBackRef.current = null;
+        if (back) animateTransform(back);
+        return;
+      }
+
+      lastTapRef.current = { t: now, x: at.x, y: at.y, nodeId };
+      setSelectedId(nodeId);
+    },
+    [animateTransform, fitTransform, transformForCard],
+  );
+
   const endTouch = useCallback((pointerId: number) => {
     const drag = nodeDragRef.current;
     if (drag && drag.pointerId === pointerId) {
@@ -635,18 +804,32 @@ export default function CanvasClient() {
         }));
         setDragCommit((t) => t + 1);
       } else {
-        // A finger that didn't travel is a tap: select the card.
-        setSelectedId(drag.nodeId);
+        handleTap(drag.nodeId, drag.lastScreen);
       }
     }
+
+    const pan = panRef.current;
+    if (pan && pan.pointerId === pointerId && !pan.moved) {
+      handleTap(null, { x: pan.x, y: pan.y });
+    }
+
     touchesRef.current.delete(pointerId);
     if (touchesRef.current.size < 2) pinchRef.current = null;
     if (touchesRef.current.size === 1) {
       const [only] = [...touchesRef.current.values()];
-      panRef.current = { x: only.x, y: only.y };
+      // A finger lifted from a pinch: whichever remains keeps panning, but it
+      // has already travelled, so it can never read as a tap.
+      panRef.current = {
+        pointerId: -1,
+        x: only.x,
+        y: only.y,
+        startX: only.x,
+        startY: only.y,
+        moved: true,
+      };
     }
     if (touchesRef.current.size === 0) panRef.current = null;
-  }, []);
+  }, [handleTap]);
 
   /** Round a finished resize and put it on the undo stack as one entry. */
   const finishResize = useCallback((pointerId: number): boolean => {
@@ -769,29 +952,12 @@ export default function CanvasClient() {
   );
 
   const zoomToFit = useCallback(() => {
-    const surface = surfaceRef.current;
-    const nodes = docRef.current.nodes;
-    if (!surface || nodes.length === 0) {
-      setTransform({ x: 0, y: 0, k: 1 });
-      return;
+    const next = fitTransform();
+    if (next) {
+      cancelAnim();
+      setTransform(next);
     }
-    const rect = surface.getBoundingClientRect();
-    const minX = Math.min(...nodes.map((n) => n.x));
-    const minY = Math.min(...nodes.map((n) => n.y));
-    const maxX = Math.max(...nodes.map((n) => n.x + n.width));
-    const maxY = Math.max(...nodes.map((n) => n.y + n.height));
-    const pad = 80;
-    const k = clamp(
-      Math.min(rect.width / (maxX - minX + pad * 2), rect.height / (maxY - minY + pad * 2)),
-      MIN_ZOOM,
-      1.5,
-    );
-    setTransform({
-      k,
-      x: rect.width / 2 - ((minX + maxX) / 2) * k,
-      y: rect.height / 2 - ((minY + maxY) / 2) * k,
-    });
-  }, []);
+  }, [cancelAnim, fitTransform]);
 
   // ─── FILE I/O ─────────────────────────────────────────────────────────────
 

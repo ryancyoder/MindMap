@@ -49,7 +49,9 @@ selects a mode; the shape of the stroke says what they meant:
 | short dab | select; dab again to edit |
 
 Fingers do the rest: one finger drags a card if it starts on one and pans the
-canvas if it doesn't, two fingers pinch-zoom, and a finger tap selects. The
+canvas if it doesn't, two fingers pinch-zoom, and a finger tap selects. Double-
+tapping a card zooms to frame it; double-tapping away returns to the view you
+came from, or fits the whole map if there isn't one. The
 grip on a selected card's corner resizes it — the only control where pen and
 finger do the same thing, so it is checked before either input branch.
 
@@ -78,6 +80,21 @@ reintroduce corner counting.
 
 Raw points are what get inked; recognition sees a smoothed, simplified copy.
 Keep it that way — smoothing the ink would make strokes feel laggy and dead.
+
+## Zoom
+
+Double-tap is a **finger gesture only**. The pen already uses a second tap to
+open a card for text; taking that over would cost handwriting to buy
+navigation, which is a bad trade on a device where the pen is the point.
+
+`zoomBackRef` holds the view to return to and is set only on the way *in*, so
+hopping between cards still returns to where you actually started rather than
+to the previous card.
+
+Only programmatic moves animate (`animateTransform`). Panning and pinching must
+track the finger exactly — a transition there reads as lag, not polish — and
+any new contact calls `cancelAnim()`, so direct manipulation always beats an
+animation in flight.
 
 ## Card sizing
 

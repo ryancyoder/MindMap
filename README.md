@@ -27,6 +27,8 @@ There is no tool palette. The shape of the stroke says what you meant:
 
 **The pen draws. Fingers navigate.** One finger pans, two pinch to zoom, and
 the pen never pans — so you can rest your hand on the glass while you draw.
+Drag a card with a finger to move it, and double-tap one to zoom in on it;
+double-tap the empty canvas to come back out.
 
 Text goes in with **Scribble**: the card opens a real text field, so you
 handwrite into it with the Pencil and never see a keyboard.

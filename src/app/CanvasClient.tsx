@@ -25,7 +25,7 @@ import {
   type Side,
   type TextNode,
 } from "@/lib/jsoncanvas";
-import { nodeRect, recognize, RECOGNIZER } from "@/lib/recognize";
+import { nodeAt, nodeRect, recognize, RECOGNIZER } from "@/lib/recognize";
 import {
   canRedo,
   canUndo,
@@ -54,8 +54,17 @@ type Transform = { x: number; y: number; k: number };
  */
 const PEN_PRIORITY_MS = 400;
 
-/** Touch contacts wider than this are a palm, not a fingertip. */
-const PALM_CONTACT_PX = 45;
+/**
+ * Contacts wider than this are a palm rather than a fingertip — but only while
+ * the pen is in play. iOS reports an ordinary fingertip on an iPad at roughly
+ * 40-60px, so applying this to every touch rejected normal navigation: pinch
+ * and pan simply did nothing. Size is now only consulted just after pen
+ * contact, which is the only time a palm is plausibly on the glass.
+ */
+const PALM_CONTACT_PX = 60;
+
+/** How long after pen contact a wide touch is still treated as a palm. */
+const PALM_WINDOW_MS = 2500;
 
 const MIN_ZOOM = 0.15;
 const MAX_ZOOM = 4;
@@ -73,6 +82,9 @@ export default function CanvasClient() {
   const [history, setHistory] = useState<History>(() => initHistory(emptyCanvas()));
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [ready, setReady] = useState(false);
+  // Bumped when a finger-drag ends, so the move lands on the undo stack as one
+  // entry instead of one per frame.
+  const [dragCommit, setDragCommit] = useState(0);
 
   const surfaceRef = useRef<HTMLDivElement>(null);
   const inkRef = useRef<HTMLCanvasElement>(null);
@@ -85,6 +97,13 @@ export default function CanvasClient() {
   const penUntilRef = useRef(0);
   const pinchRef = useRef<{ dist: number; cx: number; cy: number } | null>(null);
   const panRef = useRef<{ x: number; y: number } | null>(null);
+  const nodeDragRef = useRef<{
+    pointerId: number;
+    nodeId: string;
+    lastWorld: { x: number; y: number };
+    moved: boolean;
+  } | null>(null);
+  const lastPenAtRef = useRef(0);
   const transformRef = useRef(transform);
   const docRef = useRef(doc);
   const editingIdRef = useRef<string | null>(null);
@@ -145,6 +164,13 @@ export default function CanvasClient() {
     }, 600);
     return () => clearTimeout(handle);
   }, [doc, record, ready, showToast]);
+
+  // A finished finger-drag lands on the undo stack here rather than inside a
+  // state updater, which would double-fire under StrictMode.
+  useEffect(() => {
+    if (dragCommit === 0) return;
+    setHistory((h) => commit(h, docRef.current));
+  }, [dragCommit]);
 
   /** Apply a document change and push it onto the undo stack. */
   const applyDoc = useCallback((next: Canvas) => {
@@ -381,14 +407,28 @@ export default function CanvasClient() {
 
       if (e.pointerType === "touch") {
         if (isPenPriority()) return;
-        if (e.width > PALM_CONTACT_PX || e.height > PALM_CONTACT_PX) return;
+        // Only treat a wide contact as a palm while the pen is actually in use.
+        const palmPlausible = performance.now() - lastPenAtRef.current < PALM_WINDOW_MS;
+        if (palmPlausible && (e.width > PALM_CONTACT_PX || e.height > PALM_CONTACT_PX)) return;
 
         touchesRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
         const touches = [...touchesRef.current.values()];
         if (touches.length === 1) {
-          panRef.current = { x: e.clientX, y: e.clientY };
           pinchRef.current = null;
+          // One finger on a card moves the card; one finger on empty canvas
+          // moves the canvas. The pen never does either — it draws.
+          const world = toWorld(e.clientX, e.clientY);
+          const hit = nodeAt(docRef.current.nodes, world);
+          if (hit) {
+            nodeDragRef.current = { pointerId: e.pointerId, nodeId: hit.id, lastWorld: world, moved: false };
+            panRef.current = null;
+          } else {
+            nodeDragRef.current = null;
+            panRef.current = { x: e.clientX, y: e.clientY };
+          }
         } else if (touches.length === 2) {
+          // A second finger means zoom. Leave the card wherever it got to.
+          nodeDragRef.current = null;
           panRef.current = null;
           pinchRef.current = {
             dist: dist(touches[0], touches[1]),
@@ -401,6 +441,7 @@ export default function CanvasClient() {
 
       // Pen and mouse both draw, so the gestures are testable without an iPad.
       penUntilRef.current = performance.now() + PEN_PRIORITY_MS;
+      if (e.pointerType === "pen") lastPenAtRef.current = performance.now();
       touchesRef.current.clear();
       panRef.current = null;
       pinchRef.current = null;
@@ -412,7 +453,15 @@ export default function CanvasClient() {
         pointerId: e.pointerId,
         points: [{ x: world.x, y: world.y, p: e.pressure || 0.5, t: performance.now() }],
       };
-      e.currentTarget.setPointerCapture(e.pointerId);
+      // Capture keeps moves coming if the stroke wanders off the surface, but
+      // it throws for a pointer the browser no longer considers active. The
+      // stroke is already recorded above, so failing here must not take the
+      // handler down with it.
+      try {
+        e.currentTarget.setPointerCapture(e.pointerId);
+      } catch {
+        // Non-fatal: window-level events still complete the stroke.
+      }
     },
     [commitEditing, editingId, toWorld],
   );
@@ -424,6 +473,24 @@ export default function CanvasClient() {
         if (!touchesRef.current.has(e.pointerId)) return;
         touchesRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
         const touches = [...touchesRef.current.values()];
+
+        const drag = nodeDragRef.current;
+        if (touches.length === 1 && drag && drag.pointerId === e.pointerId) {
+          const world = toWorld(e.clientX, e.clientY);
+          const dx = world.x - drag.lastWorld.x;
+          const dy = world.y - drag.lastWorld.y;
+          drag.lastWorld = world;
+          drag.moved = true;
+          // Move live without touching history; the whole drag becomes one
+          // undo entry when the finger lifts.
+          setDoc((d) => ({
+            ...d,
+            nodes: d.nodes.map((n) =>
+              n.id === drag.nodeId ? ({ ...n, x: n.x + dx, y: n.y + dy } as CanvasNode) : n,
+            ),
+          }));
+          return;
+        }
 
         if (touches.length === 1 && panRef.current) {
           const dx = e.clientX - panRef.current.x;
@@ -488,6 +555,25 @@ export default function CanvasClient() {
   );
 
   const endTouch = useCallback((pointerId: number) => {
+    const drag = nodeDragRef.current;
+    if (drag && drag.pointerId === pointerId) {
+      nodeDragRef.current = null;
+      if (drag.moved) {
+        // Snap to whole pixels, since the format stores integers anyway.
+        setDoc((d) => ({
+          ...d,
+          nodes: d.nodes.map((n) =>
+            n.id === drag.nodeId
+              ? ({ ...n, x: Math.round(n.x), y: Math.round(n.y) } as CanvasNode)
+              : n,
+          ),
+        }));
+        setDragCommit((t) => t + 1);
+      } else {
+        // A finger that didn't travel is a tap: select the card.
+        setSelectedId(drag.nodeId);
+      }
+    }
     touchesRef.current.delete(pointerId);
     if (touchesRef.current.size < 2) pinchRef.current = null;
     if (touchesRef.current.size === 1) {

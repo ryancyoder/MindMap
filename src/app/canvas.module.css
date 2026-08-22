@@ -22,6 +22,7 @@
 
 .world {
   position: absolute;
+  touch-action: none;
   top: 0;
   left: 0;
   width: 0;
@@ -49,6 +50,7 @@
 
 .node {
   position: absolute;
+  touch-action: none;
   display: flex;
   align-items: center;
   overflow: hidden;

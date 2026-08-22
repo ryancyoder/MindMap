@@ -48,10 +48,19 @@ selects a mode; the shape of the stroke says what they meant:
 | scribble over something | delete it and any edges touching it |
 | short dab | select; dab again to edit |
 
-**Pen draws, finger navigates.** That split is what makes palm rejection free:
-a resting palm is a touch pointer, and touch can only pan or zoom. `pointerType`
+Fingers do the rest: one finger drags a card if it starts on one and pans the
+canvas if it doesn't, two fingers pinch-zoom, and a finger tap selects.
+
+**Pen draws, finger manipulates.** That split is what makes palm rejection
+free: a resting palm is a touch pointer, and touch never draws. `pointerType`
 routes every event, and a pen-priority window (`PEN_PRIORITY_MS`) locks touch
 out for a beat around each stroke so a palm landing late cannot pan mid-word.
+
+Contact-size palm rejection (`PALM_CONTACT_PX`) applies **only** within
+`PALM_WINDOW_MS` of real pen contact. iOS reports an ordinary fingertip on an
+iPad at 40-60px, so filtering by size unconditionally rejected every
+navigation touch and made pan and pinch appear missing. Do not widen that
+filter back to all touches.
 
 Recognizer thresholds live in one exported `RECOGNIZER` object in
 `src/lib/recognize.ts`. Tune there, not at call sites.
@@ -98,10 +107,11 @@ There is no unit test framework. Behavior is verified by driving the real app
 in a browser — see `scripts/README.md`. Run those after any change to the
 recognizer or the format module.
 
-Two bugs shipped past a fully green suite, both because the checks fed the app
-something the user never produces: trusted mouse events instead of pen events,
-and geometrically perfect circles instead of shaky ones. When adding a check,
-ask what it feeds the app and whether a hand could produce it.
+Three bugs shipped past a fully green suite, all because the checks fed the app
+something a hand never produces: trusted mouse events instead of pen events,
+geometrically perfect circles instead of shaky ones, and 1px-wide touch
+contacts instead of real fingertips. When adding a check, ask what it feeds the
+app and whether a hand could produce it.
 
 ## Status
 

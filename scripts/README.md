@@ -13,6 +13,7 @@ npm run build && npm run start &          # serve the app on :3000
 node scripts/verify-gestures.mjs          # the pen model
 node scripts/verify-pen-input.mjs         # pen event capture
 node scripts/verify-recognizer.mjs        # realistic hand-drawn shapes
+node scripts/verify-touch.mjs             # pan, pinch, dragging cards
 node scripts/verify-roundtrip.mjs         # .canvas fidelity
 ```
 
@@ -56,7 +57,13 @@ fourteen corners, the stroke was classified as crossing-out, and a crossing-out
 over empty canvas did nothing at all. Ink appeared and no card did. The strokes
 here wobble, leave gaps, double back, and run short of samples.
 
-The lesson generalizes twice over: when a check drives the app through a
+`verify-touch.mjs` covers the finger. Touch went untested until it broke on
+hardware: the palm filter rejected any contact wider than 45px, and iOS reports
+an ordinary fingertip on an iPad at 40-60px, so pan and pinch did nothing at
+all — while synthetic tests passed, because a synthetic PointerEvent defaults
+to `width: 1`. The 50px-wide contact case is the one that matters; keep it.
+
+The lesson generalizes three times over: when a check drives the app through a
 different input path than the user does, or feeds it idealized input the user
 cannot produce, a green suite says nothing about the user's experience.
 

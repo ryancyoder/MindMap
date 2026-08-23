@@ -258,6 +258,46 @@ export function serializeCanvas(canvas: Canvas): string {
   return JSON.stringify({ nodes, edges: canvas.edges, ...topLevelExtras }, null, "\t") + "\n";
 }
 
+/**
+ * A card that is a doorway into another map.
+ *
+ * `file` holds a path, so Obsidian and anything else reading the spec see an
+ * ordinary file node. The stable id lives alongside it in an extra key, which
+ * survives round trips, because resolving by name alone breaks the moment two
+ * maps share one or a map is renamed.
+ */
+export const NESTED_ID_KEY = "x-mindmap-canvas";
+
+/** Which sub-map node each crossing edge was attached to before folding. */
+export const NESTED_PORTS_KEY = "x-mindmap-ports";
+
+export function isCanvasFile(node: CanvasNode): boolean {
+  return node.type === "file" && /\.canvas$/i.test(node.file);
+}
+
+/** The library id a doorway points at, if it has one. */
+export function nestedCanvasId(node: CanvasNode): string | null {
+  const value = (node as Record<string, unknown>)[NESTED_ID_KEY];
+  return typeof value === "string" && value ? value : null;
+}
+
+export function nestedPorts(node: CanvasNode): Record<string, string> {
+  const value = (node as Record<string, unknown>)[NESTED_PORTS_KEY];
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof v === "string") out[k] = v;
+  }
+  return out;
+}
+
+/** The name shown on a doorway card, without the extension. */
+export function nestedCanvasName(node: CanvasNode): string {
+  if (node.type !== "file") return "";
+  const base = node.file.split("/").pop() ?? node.file;
+  return base.replace(/\.canvas$/i, "");
+}
+
 export function isTextNode(node: CanvasNode): node is TextNode & UnknownKeys {
   return node.type === "text";
 }

@@ -207,6 +207,32 @@ bottom of the canvas.
 device sizes; the rest of the suite runs at one wide desktop viewport where
 this class of bug cannot appear.
 
+## Nested maps
+
+A card can be a doorway into another map. It is a spec `file` node whose `file`
+is a `.canvas` path, so Obsidian and anything else reading the format see an
+ordinary file card — nothing invented. The library id rides alongside in
+`NESTED_ID_KEY`, because resolving by name breaks on a rename or a duplicate,
+and extras survive round trips.
+
+**Fold** moves a selection into a map of its own and leaves a doorway. Edges
+that crossed the boundary are rewired onto the doorway, so nothing is orphaned,
+and **which sub-map card each of those edges came from is recorded** in
+`NESTED_PORTS_KEY`. That is what makes unfolding restore the original wiring
+instead of guessing — without it, everything reattaches to whatever card is
+first, and folding quietly loses information.
+
+Unfolding renames every incoming id. Sub-map ids are only unique within that
+map and would otherwise collide with the parent's.
+
+The fold/unfold logic in `src/lib/nesting.ts` is pure — it takes documents and
+returns documents. Keep it that way; the caller owns creating library records.
+
+**Buttons drawn on a card need `data-card-action`**, which exempts them in
+`onPointerDown`. Without it the surface captures the pointer, `pointerup` is
+retargeted, and the click never reaches the button — which is exactly how the
+doorway's Open button failed the first time.
+
 ## Card sizing
 
 Cards grow to fit their text when an edit is committed, and never shrink — so a

@@ -133,6 +133,87 @@
   text-overflow: ellipsis;
 }
 
+/* A doorway into another map. Reads as a container, not a card: it holds
+   something rather than saying something. */
+.doorwayNode {
+  border-style: double;
+  border-width: 3px;
+  background: color-mix(in srgb, var(--accent-soft) 40%, var(--surface));
+}
+
+.doorway {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  min-width: 0;
+  align-items: flex-start;
+}
+
+.doorwayName {
+  max-width: 100%;
+  overflow: hidden;
+  font-size: 15px;
+  font-weight: 600;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.doorwayMeta {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.doorwayOpen {
+  margin-top: 4px;
+  padding: 5px 10px;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+/* ─── TRAIL ────────────────────────────────────────────────────────────── */
+
+.trail {
+  position: absolute;
+  z-index: 9;
+  top: calc(max(12px, env(safe-area-inset-top)) + 62px);
+  left: max(12px, env(safe-area-inset-left));
+  max-width: calc(100% - 24px);
+  padding: 4px 6px;
+  overflow-x: auto;
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.trailStep {
+  padding: 4px 8px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.trailStep::after {
+  content: "›";
+  margin-left: 8px;
+  color: var(--text-muted);
+}
+
+.trailHere {
+  padding: 4px 6px;
+  color: var(--text-muted);
+}
+
 /* ─── INK ──────────────────────────────────────────────────────────────── */
 
 .ink {

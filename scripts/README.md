@@ -22,6 +22,7 @@ node scripts/verify-multiselect.mjs       # multi-select, align, bulk move
 node scripts/verify-arrange.mjs           # snap, edge alignment, pen select mode
 node scripts/verify-layout.mjs            # chrome layout at real device sizes
 node scripts/verify-edges.mjs             # deleting a connection
+node scripts/verify-nesting.mjs           # folding a branch into its own map
 node scripts/verify-tilt.mjs              # tilt-to-pan maths and interaction
 node scripts/verify-cloud.mjs             # cloud library (skips if unconfigured)
 node scripts/verify-roundtrip.mjs         # .canvas fidelity
@@ -138,6 +139,13 @@ convention against itself rather than against a device.
 
 The sensor and the iOS permission prompt cannot be driven here, and whether the
 gain and dead zone feel right has to be judged in the hand.
+
+`verify-nesting.mjs` covers folding and unfolding. Two of its checks carry the
+weight: that no edge dangles after either operation, and that unfolding
+restores the **original** wiring rather than reattaching everything to
+whichever card happens to be first. An early version of the suite also had
+parent and sub-map with identical card counts, so "it navigated" passed
+without navigating — the maps are now told apart by their contents.
 
 The lesson generalizes four times over: when a check drives the app through a
 different input path than the user does, feeds it idealized input the user

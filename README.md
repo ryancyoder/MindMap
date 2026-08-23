@@ -85,6 +85,16 @@ npm run build
 Behavior is verified by driving the real app in a browser — see
 [`scripts/README.md`](scripts/README.md).
 
+## When a map gets too big
+
+Select a branch and hit **Fold**: those cards move into a map of their own and
+leave a single doorway card behind, still connected to whatever they were
+connected to. Tap **Open ↗** to walk in; the trail at the top walks you back.
+**Unfold** brings everything back out, wired the way it was.
+
+The doorway is an ordinary JSON Canvas file node, so a folded map still opens
+in Obsidian — the doorway just appears there as a file card.
+
 ## The cloud library
 
 If the deployment has Supabase configured, the Maps sheet grows an **In the

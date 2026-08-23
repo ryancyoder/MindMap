@@ -12,6 +12,9 @@ import {
 import {
   emptyCanvas,
   makeId,
+  isCanvasFile,
+  nestedCanvasId,
+  nestedCanvasName,
   nodeDisplayText,
   parseCanvas,
   PRESET_COLOR_IDS,
@@ -55,6 +58,7 @@ import {
   rememberLastOpened,
   type CanvasRecord,
 } from "@/lib/store";
+import { foldSelection, nameForFold, sanitizeName, unfoldNested } from "@/lib/nesting";
 import {
   deleteCloudCanvas,
   listCloudCanvases,
@@ -157,6 +161,10 @@ export default function CanvasClient() {
   const [tiltOn, setTiltOn] = useState(false);
   /** Which direction the user is currently demonstrating, if any. */
   const [tiltStep, setTiltStep] = useState<"none" | "neutral" | "right" | "down">("none");
+  /** Ancestors of the map currently open, outermost first. */
+  const [trail, setTrail] = useState<{ id: string; name: string }[]>([]);
+  /** Card counts for the doorways on screen, so each can show its size. */
+  const [nestedSizes, setNestedSizes] = useState<Record<string, number>>({});
 
   const surfaceRef = useRef<HTMLDivElement>(null);
   const inkRef = useRef<HTMLCanvasElement>(null);
@@ -681,7 +689,15 @@ export default function CanvasClient() {
   const onPointerDown = useCallback(
     (e: React.PointerEvent<HTMLDivElement>) => {
       const target = e.target as HTMLElement;
-      if (target.closest(`.${styles.nodeEditor}`) || target.closest(`.${styles.chrome}`)) return;
+      if (
+        target.closest(`.${styles.nodeEditor}`) ||
+        target.closest(`.${styles.chrome}`) ||
+        // Buttons drawn on a card. Without this the surface captures the
+        // pointer, pointerup is retargeted, and the click never arrives.
+        target.closest("[data-card-action]")
+      ) {
+        return;
+      }
 
       // The resize grip is the one place where pen and finger do the same
       // thing, so it is checked before either input branch.
@@ -1653,6 +1669,7 @@ export default function CanvasClient() {
         return;
       }
       adopt(next);
+      setTrail([]);
       setLibraryOpen(false);
       requestAnimationFrame(zoomToFit);
     },
@@ -1745,6 +1762,134 @@ export default function CanvasClient() {
     },
     [refreshCloud, showToast],
   );
+
+  // ─── NESTED MAPS ──────────────────────────────────────────────────────────
+  //
+  // A doorway is a spec `file` node pointing at another .canvas, so Obsidian
+  // sees an ordinary file card. The library id rides along in an extra key,
+  // because resolving by name breaks on a rename or a duplicate.
+
+  /** Keep the card counts shown on doorways in step with the maps behind them. */
+  useEffect(() => {
+    let cancelled = false;
+    const doorways = doc.nodes.filter((n) => isCanvasFile(n) && nestedCanvasId(n));
+    (async () => {
+      const sizes: Record<string, number> = {};
+      for (const node of doorways) {
+        const id = nestedCanvasId(node);
+        if (!id) continue;
+        try {
+          const record = await getCanvas(id);
+          if (record) sizes[id] = record.doc.nodes.length;
+        } catch {
+          // A doorway to a map that has gone is still drawn, just without a count.
+        }
+      }
+      if (cancelled) return;
+      // Replace only when something actually differs, or this effect would
+      // re-run itself forever through the doc it depends on.
+      setNestedSizes((prev) => {
+        const same =
+          Object.keys(prev).length === Object.keys(sizes).length &&
+          Object.entries(sizes).every(([k, v]) => prev[k] === v);
+        return same ? prev : sizes;
+      });
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [doc.nodes]);
+
+  /** Walk into the map a doorway points at. */
+  const openNested = useCallback(
+    async (node: CanvasNode) => {
+      const id = nestedCanvasId(node);
+      if (!id) {
+        showToast("That card points at a file, not a map in this library.");
+        return;
+      }
+      const target = await getCanvas(id);
+      if (!target) {
+        showToast("That map isn't in this library any more.");
+        return;
+      }
+      // Flush first: autosave is debounced, and walking away within a second of
+      // an edit would otherwise lose it — the same race the library has.
+      await flushSave();
+      const here = record;
+      adopt(target);
+      if (here) setTrail((t) => [...t, { id: here.id, name: here.name }]);
+      requestAnimationFrame(zoomToFit);
+    },
+    [adopt, flushSave, record, showToast, zoomToFit],
+  );
+
+  /** Back out to an ancestor. */
+  const openAncestor = useCallback(
+    async (index: number) => {
+      const step = trail[index];
+      if (!step) return;
+      const target = await getCanvas(step.id);
+      if (!target) {
+        showToast("That map isn't in this library any more.");
+        setTrail((t) => t.slice(0, index));
+        return;
+      }
+      await flushSave();
+      adopt(target);
+      setTrail((t) => t.slice(0, index));
+      requestAnimationFrame(zoomToFit);
+    },
+    [adopt, flushSave, showToast, trail, zoomToFit],
+  );
+
+  /** Move the selection into a map of its own, leaving a doorway behind. */
+  const foldSelected = useCallback(async () => {
+    const current = docRef.current;
+    const chosen = current.nodes.filter((n) => selectedIds.includes(n.id));
+    if (chosen.length === 0) return;
+    if (chosen.length === current.nodes.length) {
+      showToast("Leave at least one card behind to fold into.");
+      return;
+    }
+
+    const name = sanitizeName(nameForFold(chosen));
+    const subRecord = newRecord(name);
+    const result = foldSelection(current, selectedIds, subRecord.id, name);
+    if (!result) return;
+
+    await putCanvas({ ...subRecord, doc: result.sub });
+    applyDoc(result.parent);
+    setSelectedIds([result.doorwayId]);
+    setEditingId(null);
+    await refreshLibrary();
+    showToast(`Folded ${chosen.length} card${chosen.length === 1 ? "" : "s"} into “${name}”.`);
+  }, [applyDoc, refreshLibrary, selectedIds, showToast]);
+
+  /** Bring a folded map's contents back, replacing the doorway. */
+  const unfoldSelected = useCallback(async () => {
+    const current = docRef.current;
+    const node = current.nodes.find((n) => n.id === selectedIds[0]);
+    if (!node || !isCanvasFile(node)) return;
+    const id = nestedCanvasId(node);
+    if (!id) {
+      showToast("That card points at a file, not a map in this library.");
+      return;
+    }
+    const target = await getCanvas(id);
+    if (!target) {
+      showToast("That map isn't in this library any more.");
+      return;
+    }
+    const next = unfoldNested(current, node, target.doc);
+    if (!next) {
+      showToast("That map is empty — nothing to bring back.");
+      return;
+    }
+    applyDoc(next);
+    setSelectedIds([]);
+    showToast(`Brought back ${target.doc.nodes.length} card${target.doc.nodes.length === 1 ? "" : "s"}.`);
+  }, [applyDoc, selectedIds, showToast]);
 
   const commitRename = useCallback(async () => {
     const id = renamingId;
@@ -1942,6 +2087,7 @@ export default function CanvasClient() {
                 className={[
                   styles.node,
                   node.type === "group" ? styles.groupNode : "",
+                  isCanvasFile(node) ? styles.doorwayNode : "",
                   selectedIds.includes(node.id) ? styles.nodeSelected : "",
                 ]
                   .filter(Boolean)
@@ -1971,6 +2117,19 @@ export default function CanvasClient() {
                     onBlur={commitEditing}
                     placeholder="Write here…"
                   />
+                ) : isCanvasFile(node) ? (
+                  <div className={styles.doorway}>
+                    <span className={styles.doorwayName}>{nestedCanvasName(node)}</span>
+                    <span className={styles.doorwayMeta}>{doorwaySubtitle(node, nestedSizes)}</span>
+                    <button
+                      className={styles.doorwayOpen}
+                      data-card-action="open"
+                      onClick={() => void openNested(node)}
+                      aria-label={`Open ${nestedCanvasName(node)}`}
+                    >
+                      Open ↗
+                    </button>
+                  </div>
                 ) : (
                   <div className={node.type === "group" ? styles.groupLabel : styles.nodeText}>
                     {nodeDisplayText(node) ||
@@ -2025,6 +2184,21 @@ export default function CanvasClient() {
           }}
         />
       </header>
+
+      {trail.length > 0 ? (
+        <nav className={`${styles.chrome} ${styles.trail}`} aria-label="Map trail">
+          {trail.map((step, i) => (
+            <button
+              key={`${step.id}-${i}`}
+              className={styles.trailStep}
+              onClick={() => void openAncestor(i)}
+            >
+              {step.name}
+            </button>
+          ))}
+          <span className={styles.trailHere}>{record?.name ?? ""}</span>
+        </nav>
+      ) : null}
 
       <div className={styles.bottomDock}>
         {toasts.length > 0 ? (
@@ -2104,16 +2278,34 @@ export default function CanvasClient() {
                 />
               ))}
             </div>
-            {selectedNodes.length === 1 ? (
-              <button
-                className={styles.button}
-                onClick={() => {
-                  const node = docRef.current.nodes.find((n) => n.id === selectedIds[0]);
-                  if (node) beginEditing(node);
-                }}
-              >
-                Edit
-              </button>
+            {selectedNodes.length === 1 && isCanvasFile(selectedNodes[0]) ? (
+              <>
+                <button className={styles.button} onClick={() => void openNested(selectedNodes[0])}>
+                  Open
+                </button>
+                <button className={styles.button} onClick={() => void unfoldSelected()}>
+                  Unfold
+                </button>
+              </>
+            ) : selectedNodes.length === 1 ? (
+              <>
+                <button
+                  className={styles.button}
+                  onClick={() => {
+                    const node = docRef.current.nodes.find((n) => n.id === selectedIds[0]);
+                    if (node) beginEditing(node);
+                  }}
+                >
+                  Edit
+                </button>
+                <button
+                  className={styles.button}
+                  onClick={() => void foldSelected()}
+                  title="Move this into a map of its own"
+                >
+                  Fold
+                </button>
+              </>
             ) : (
               <>
                 <span className={styles.selectionCount}>{selectedNodes.length} selected</span>
@@ -2138,6 +2330,13 @@ export default function CanvasClient() {
                   title="Even out the gaps"
                 >
                   Space
+                </button>
+                <button
+                  className={styles.button}
+                  onClick={() => void foldSelected()}
+                  title="Move these into a map of their own"
+                >
+                  Fold
                 </button>
               </>
             )}
@@ -2492,6 +2691,14 @@ function relativeTime(iso: string): string {
   const days = Math.round(hours / 24);
   if (days < 30) return `${days} day${days === 1 ? "" : "s"} ago`;
   return new Date(then).toLocaleDateString();
+}
+
+/** What a doorway says under its name. */
+function doorwaySubtitle(node: CanvasNode, sizes: Record<string, number>): string {
+  const id = nestedCanvasId(node);
+  if (!id) return "linked file";
+  const size = sizes[id];
+  return size === undefined ? "nested map" : `${size} card${size === 1 ? "" : "s"}`;
 }
 
 function clamp(v: number, min: number, max: number): number {

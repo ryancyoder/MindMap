@@ -25,7 +25,17 @@ import {
 } from "@/lib/jsoncanvas";
 import { nodeAt, nodeRect, recognize, RECOGNIZER } from "@/lib/recognize";
 import { edgeCurve, rectsOverlap, snap } from "@/lib/geometry";
-import { requestTiltPermission, tiltPan, tiltSupported, type TiltReading } from "@/lib/tilt";
+import {
+  loadCalibration,
+  normalizeAxis,
+  requestTiltPermission,
+  saveCalibration,
+  tiltOffset,
+  tiltPan,
+  tiltSupported,
+  type TiltCalibration,
+  type TiltReading,
+} from "@/lib/tilt";
 import {
   canRedo,
   canUndo,
@@ -145,6 +155,8 @@ export default function CanvasClient() {
   const [snapToGrid, setSnapToGrid] = useState(false);
   const [penMode, setPenMode] = useState<"draw" | "select">("draw");
   const [tiltOn, setTiltOn] = useState(false);
+  /** Which direction the user is currently demonstrating, if any. */
+  const [tiltStep, setTiltStep] = useState<"none" | "neutral" | "right" | "down">("none");
 
   const surfaceRef = useRef<HTMLDivElement>(null);
   const inkRef = useRef<HTMLCanvasElement>(null);
@@ -179,10 +191,11 @@ export default function CanvasClient() {
   /** The view to return to when double-tapping away from a card. */
   const zoomBackRef = useRef<Transform | null>(null);
   const animRef = useRef<number | null>(null);
-  /** The pose the iPad was held in when tilt was switched on. */
-  const tiltNeutralRef = useRef<TiltReading | null>(null);
   const tiltReadingRef = useRef<TiltReading>({ beta: 0, gamma: 0 });
   const tiltFrameRef = useRef<number | null>(null);
+  const tiltCalRef = useRef<TiltCalibration | null>(null);
+  /** Partial calibration, filled in as each direction is demonstrated. */
+  const tiltDraftRef = useRef<{ neutral: TiltReading | null }>({ neutral: null });
   const nodeDragRef = useRef<{
     pointerId: number;
     nodeId: string;
@@ -1366,17 +1379,12 @@ export default function CanvasClient() {
    * would ruin the stroke you are making.
    */
   useEffect(() => {
-    if (!tiltOn) return;
+    if (!tiltOn && tiltStep === "none") return;
 
     const onReading = (e: DeviceOrientationEvent) => {
       if (e.beta === null || e.gamma === null) return;
       tiltReadingRef.current = { beta: e.beta, gamma: e.gamma };
-      // Calibrate on the pose already being held: an iPad is never flat, and
-      // treating level as neutral would fling the canvas the moment this
-      // switched on.
-      if (!tiltNeutralRef.current) tiltNeutralRef.current = { beta: e.beta, gamma: e.gamma };
     };
-
     window.addEventListener("deviceorientation", onReading);
 
     let last = performance.now();
@@ -1385,21 +1393,26 @@ export default function CanvasClient() {
       last = now;
       tiltFrameRef.current = requestAnimationFrame(step);
 
-      const neutral = tiltNeutralRef.current;
+      const cal = tiltCalRef.current;
+      // Nothing pans while a direction is being demonstrated, or the canvas
+      // would slide out from under the thing being calibrated.
+      if (!cal || !tiltOn || tiltStep !== "none") return;
+
+      // Stand down while a pointer is busy: a canvas sliding underneath a
+      // stroke would drag that stroke out of shape as it was drawn.
       const busy =
         strokeRef.current !== null ||
         nodeDragRef.current !== null ||
         resizeRef.current !== null ||
         lassoRef.current !== null ||
         touchesRef.current.size > 0;
-      if (!neutral || busy) return;
+      if (busy) return;
 
-      const angle = typeof screen !== "undefined" ? (screen.orientation?.angle ?? 0) : 0;
-      const { vx, vy } = tiltPan(tiltReadingRef.current, neutral, angle);
+      const { vx, vy } = tiltPan(tiltReadingRef.current, cal);
       if (vx === 0 && vy === 0) return;
-
-      // Lean right, see what is to the right: the view moves, so the content
-      // moves the other way.
+      // Lean toward what you want to see: the view moves, so content moves the
+      // other way. Which lean means which direction is whatever was
+      // demonstrated, so this sign is the only convention left in the code.
       setTransform((t) => ({ ...t, x: t.x - vx * dt, y: t.y - vy * dt }));
     };
     tiltFrameRef.current = requestAnimationFrame(step);
@@ -1409,12 +1422,65 @@ export default function CanvasClient() {
       if (tiltFrameRef.current !== null) cancelAnimationFrame(tiltFrameRef.current);
       tiltFrameRef.current = null;
     };
-  }, [tiltOn]);
+  }, [tiltOn, tiltStep]);
+
+  /** Record whatever the device is doing right now as the current step. */
+  const captureTiltStep = useCallback(() => {
+    const reading = tiltReadingRef.current;
+
+    if (tiltStep === "neutral") {
+      tiltDraftRef.current.neutral = { ...reading };
+      setTiltStep("right");
+      return;
+    }
+
+    const neutral = tiltDraftRef.current.neutral;
+    if (!neutral) return;
+    const axis = normalizeAxis(tiltOffset(reading, neutral));
+    if (!axis) {
+      showToast("Tilt it a bit further, then tap again.");
+      return;
+    }
+
+    if (tiltStep === "right") {
+      tiltCalRef.current = { neutral, right: axis, down: { g: 0, b: 0 } };
+      setTiltStep("down");
+      return;
+    }
+
+    if (tiltStep === "down") {
+      const partial = tiltCalRef.current;
+      if (!partial) return;
+      const complete: TiltCalibration = { ...partial, down: axis };
+      tiltCalRef.current = complete;
+      saveCalibration(complete);
+      setTiltStep("none");
+      setTiltOn(true);
+      try {
+        localStorage.setItem("mindmap_tilt", "1");
+      } catch {
+        // Losing the preference is harmless.
+      }
+      showToast("Tilt ready.");
+    }
+  }, [showToast, tiltStep]);
+
+  const cancelTiltSetup = useCallback(() => {
+    setTiltStep("none");
+    tiltDraftRef.current.neutral = null;
+    if (!tiltCalRef.current) setTiltOn(false);
+  }, []);
+
+  const startTiltSetup = useCallback(() => {
+    tiltDraftRef.current.neutral = null;
+    tiltCalRef.current = null;
+    setTiltStep("neutral");
+  }, []);
 
   const toggleTilt = useCallback(async () => {
-    if (tiltOn) {
+    if (tiltOn || tiltStep !== "none") {
       setTiltOn(false);
-      tiltNeutralRef.current = null;
+      setTiltStep("none");
       try {
         localStorage.setItem("mindmap_tilt", "0");
       } catch {
@@ -1426,7 +1492,6 @@ export default function CanvasClient() {
       showToast("This device doesn't report tilt.");
       return;
     }
-    // iOS only grants this from a user gesture, which is this click.
     const verdict = await requestTiltPermission();
     if (verdict !== "granted") {
       showToast(
@@ -1436,16 +1501,22 @@ export default function CanvasClient() {
       );
       return;
     }
-    // Recalibrate on the next reading, whatever pose you are holding now.
-    tiltNeutralRef.current = null;
-    setTiltOn(true);
-    try {
-      localStorage.setItem("mindmap_tilt", "1");
-    } catch {
-      // Losing the preference is harmless.
+
+    // A saved calibration is reused; the first time, it has to be taught.
+    const saved = loadCalibration();
+    if (saved) {
+      tiltCalRef.current = saved;
+      setTiltOn(true);
+      try {
+        localStorage.setItem("mindmap_tilt", "1");
+      } catch {
+        // Losing the preference is harmless.
+      }
+      showToast("Tilt on.");
+      return;
     }
-    showToast("Tilt to pan. Hold it as you are — that's level now.");
-  }, [showToast, tiltOn]);
+    startTiltSetup();
+  }, [showToast, startTiltSetup, tiltOn, tiltStep]);
 
   const toggleSnap = useCallback(() => {
     setSnapToGrid((on) => {
@@ -1999,6 +2070,16 @@ export default function CanvasClient() {
           >
             Tilt
           </button>
+          {tiltOn && tiltStep === "none" ? (
+            <button
+              className={styles.button}
+              onClick={startTiltSetup}
+              title="Teach it the directions again"
+              aria-label="Recalibrate tilt"
+            >
+              ⟳
+            </button>
+          ) : null}
           <button className={styles.button} onClick={zoomToFit}>
             Fit
           </button>
@@ -2088,6 +2169,34 @@ export default function CanvasClient() {
               <b>One finger</b> pans, <b>two</b> zoom. The pen never pans.
             </li>
           </ul>
+        </div>
+      ) : null}
+
+      {tiltStep !== "none" ? (
+        <div className={`${styles.chrome} ${styles.tiltSetup}`} role="dialog" aria-label="Set up tilt">
+          <p className={styles.tiltStepLabel}>
+            {tiltStep === "neutral"
+              ? "Hold the iPad however you're comfortable."
+              : tiltStep === "right"
+                ? "Now lean it the way you'd lean to look at the RIGHT of your map. Hold it there."
+                : "Now lean it the way you'd lean to look BELOW your map. Hold it there."}
+          </p>
+          <p className={styles.tiltStepHint}>
+            {tiltStep === "neutral"
+              ? "This becomes level — everything is measured from here."
+              : "Whatever you do defines that direction, so it can't come out backwards."}
+          </p>
+          <div className={styles.tiltStepActions}>
+            <button className={styles.button} onClick={cancelTiltSetup}>
+              Cancel
+            </button>
+            <button className={`${styles.button} ${styles.primary}`} onClick={captureTiltStep}>
+              {tiltStep === "neutral" ? "This is level" : "Like this"}
+            </button>
+          </div>
+          <span className={styles.tiltStepCount}>
+            {tiltStep === "neutral" ? "1" : tiltStep === "right" ? "2" : "3"} of 3
+          </span>
         </div>
       ) : null}
 

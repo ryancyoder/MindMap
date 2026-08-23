@@ -346,6 +346,50 @@
   border-bottom-right-radius: 4px;
 }
 
+/* ─── TILT SETUP ───────────────────────────────────────────────────────── */
+
+.tiltSetup {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  width: min(400px, calc(100% - 40px));
+  padding: 16px 18px;
+  transform: translate(-50%, -50%);
+  text-align: left;
+}
+
+.tiltStepLabel {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.tiltStepHint {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.tiltStepActions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 6px;
+}
+
+.tiltStepCount {
+  color: var(--text-muted);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+}
+
 /* ─── MAP LIBRARY ──────────────────────────────────────────────────────── */
 
 .sheetBackdrop {

@@ -163,24 +163,33 @@ Tilting the iPad pans the canvas, for when the hand that would pan is holding
 the pen. Off by default and behind a toggle, because a canvas that drifts
 whenever you shift in your chair is worse than no feature.
 
-Three things it must keep doing:
+**The sensor-to-screen mapping is calibrated by demonstration, and that is the
+design — do not replace it with a derived one.** Getting it from first
+principles means being right about all of: the sign of `beta`, the sign of
+`gamma`, how both rotate with `screen.orientation.angle`, how the device is
+being held, and whether "tilt right" should move the view or the content. Each
+is a coin flip. A derived version got several wrong at once — axes swapped and
+signs inverted — and passed its tests, because those tests checked the
+convention against itself.
 
-- **Calibrate on the pose being held.** The first reading after switching on
-  becomes neutral. Nobody holds an iPad flat, so treating level as neutral
-  flings the canvas the moment it turns on.
+The user leans once per direction and whatever they do defines it. Orientation,
+sensor conventions and holding style are all baked into two vectors; the pan is
+just the offset from neutral projected onto each. `verify-tilt.mjs` proves the
+point by running the same checks on two simulated devices whose sensors work in
+opposite directions — a hard-coded mapping can pass one, never both.
+
+Two things it must keep doing:
+
 - **Stand down while a pointer is busy** — mid-stroke, mid-drag, mid-pinch. A
-  canvas sliding under a stroke ruins the stroke.
-- **Rotate for screen orientation.** `beta`/`gamma` are fixed to the hardware,
-  not the picture. At 90° they arrive swapped; without the rotation in
-  `tiltPan`, tilting left pans upward in landscape.
-
-The loop runs on `requestAnimationFrame`, not on sensor readings, because
-readings arrive at whatever rate the hardware likes and panning has to be
-frame-rate independent.
+  canvas sliding under a stroke ruins the stroke. It also stands down during
+  calibration, or the canvas slides out from under the thing being taught.
+- **Run on `requestAnimationFrame`**, not on sensor readings: readings arrive
+  at whatever rate the hardware likes, and panning has to be frame-rate
+  independent.
 
 iOS only grants motion access from a user gesture, which is why
 `requestTiltPermission` is called from the toggle's click handler and nowhere
-else.
+else. Calibration is saved, so it is asked for once.
 
 ## Chrome layout
 

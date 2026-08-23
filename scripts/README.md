@@ -129,13 +129,15 @@ by deleting one of the cards it joined. Its bowed-connector check is the one
 that matters — hit-testing samples the same curve the renderer draws, and a
 straight-line approximation passes the first check while failing that one.
 
-`verify-tilt.mjs` covers what is testable about tilt panning: the maths, and
-whether the loop stands down while a pointer is busy. The sensor cannot be
-faked convincingly and the iOS permission prompt cannot be driven at all, so
-how it *feels* — the gain and dead zone — has to be judged on the iPad. Its
-landscape checks are the valuable ones: beta and gamma are fixed to the
-hardware rather than the picture, so at 90° they arrive swapped, and getting
-that wrong makes tilting left pan upwards.
+`verify-tilt.mjs` runs the same checks on **two simulated devices whose sensors
+work in opposite directions**, because the mapping is calibrated by
+demonstration rather than derived. A hard-coded mapping can pass one of those,
+never both. The first version was derived, passed its tests, and was wrong on
+real hardware — axes swapped, signs inverted — because those tests checked the
+convention against itself rather than against a device.
+
+The sensor and the iOS permission prompt cannot be driven here, and whether the
+gain and dead zone feel right has to be judged in the hand.
 
 The lesson generalizes four times over: when a check drives the app through a
 different input path than the user does, feeds it idealized input the user

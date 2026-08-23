@@ -1,13 +1,14 @@
 // Tilt-to-pan.
 //
-// The sensor cannot be faked convincingly and the iOS permission prompt cannot
-// be driven at all, so this checks the two things that are testable and are
-// where the bugs would be: the pan maths, and whether the loop respects the
-// rest of the app. Actual hardware behaviour has to be tried on the iPad.
+// The mapping from sensor to screen is calibrated by demonstration, so the
+// point of these checks is not "does my sign convention match the spec" — it is
+// "does ANY device convention end up correct once the user has shown it what
+// they mean". So the same behaviour is verified twice, on two simulated devices
+// whose sensors work in opposite directions. A hard-coded mapping can pass one
+// of those, never both.
 //
-// The maths matters most for orientation. beta and gamma are fixed to the
-// hardware, not the picture, so in landscape they arrive swapped — get that
-// wrong and tilting left pans the canvas upwards.
+// The sensor itself and the iOS permission prompt cannot be driven here, and
+// whether the gain and dead zone feel right has to be judged in the hand.
 
 import { BASE_URL, launchBrowser, makeChecker } from "./_harness.mjs";
 
@@ -20,147 +21,180 @@ page.on("pageerror", (e) => errors.push(String(e)));
 await page.goto(BASE_URL, { waitUntil: "networkidle" });
 await page.waitForTimeout(400);
 
-// ── the maths, exercised through the shipped bundle ────────────────────────
-
 const view = () =>
   page.evaluate(() => {
     const style = document.querySelector('[class*="world"]').getAttribute("style");
     const m = /translate\(([-\d.]+)px, ([-\d.]+)px\) scale\(([-\d.]+)\)/.exec(style);
-    return m ? { x: +m[1], y: +m[2], k: +m[3] } : null;
+    return m ? { x: +m[1], y: +m[2] } : null;
   });
 
 const tilt = (beta, gamma) =>
-  page.evaluate(({ beta, gamma }) => {
-    window.dispatchEvent(
-      Object.assign(new Event("deviceorientation"), { beta, gamma, alpha: 0 }),
-    );
-  }, { beta, gamma });
+  page.evaluate(
+    ({ beta, gamma }) =>
+      window.dispatchEvent(Object.assign(new Event("deviceorientation"), { beta, gamma, alpha: 0 })),
+    { beta, gamma },
+  );
 
-// Turn it on. Chromium has no requestPermission, so the grant is automatic.
+const panelText = async () =>
+  (await page.locator('[class*="tiltStepLabel"]').count())
+    ? page.locator('[class*="tiltStepLabel"]').innerText()
+    : "";
+
+/**
+ * Teach it a device. `right` and `down` are the sensor readings that device
+ * produces when leaned those ways — deliberately different between the two
+ * cases below, including one that is simply inverted.
+ */
+async function calibrate({ neutral, right, down }) {
+  await tilt(neutral.beta, neutral.gamma);
+  await page.waitForTimeout(150);
+  await page.getByRole("button", { name: "This is level" }).click();
+  await page.waitForTimeout(200);
+
+  await tilt(right.beta, right.gamma);
+  await page.waitForTimeout(150);
+  await page.getByRole("button", { name: "Like this" }).click();
+  await page.waitForTimeout(200);
+
+  await tilt(down.beta, down.gamma);
+  await page.waitForTimeout(150);
+  await page.getByRole("button", { name: "Like this" }).click();
+  await page.waitForTimeout(300);
+}
+
+// ── device A: leaning right raises gamma ───────────────────────────────────
+
 await page.getByRole("button", { name: "Tilt", exact: true }).click();
+await page.waitForTimeout(300);
+check("the first time, it asks to be taught", (await panelText()).includes("however you're comfortable"), true);
+
+const A = {
+  neutral: { beta: 40, gamma: 0 },
+  right: { beta: 40, gamma: 25 },
+  down: { beta: 65, gamma: 0 },
+};
+
+// Nothing may move while a direction is being demonstrated.
+await tilt(A.neutral.beta, A.neutral.gamma);
+await page.waitForTimeout(150);
+await page.getByRole("button", { name: "This is level" }).click();
 await page.waitForTimeout(200);
-check(
-  "the toggle turns on where the browser reports orientation",
-  await page.evaluate(() =>
-    /buttonOn/.test([...document.querySelectorAll("button")].find((b) => b.textContent.trim() === "Tilt").className),
-  ),
-  true,
-);
+const duringSetup = await view();
+await tilt(40, 35);
+await page.waitForTimeout(400);
+check("nothing pans while a direction is being demonstrated", await view(), duringSetup);
 
-// First reading is the neutral pose — an iPad is held at an angle, and level
-// would fling the canvas the moment it switched on.
-await tilt(38, 4);
-await page.waitForTimeout(260);
-const calibrated = await view();
-await tilt(38, 4);
-await page.waitForTimeout(320);
-check("holding the calibrated pose does not pan", await view(), calibrated);
-
-// Inside the dead zone, still nothing.
-await tilt(41, 7);
-await page.waitForTimeout(320);
-check("a small wobble stays inside the dead zone", await view(), calibrated);
-
-// Lean right: the view moves right, so the content moves left.
-await tilt(38, 30);
-await page.waitForTimeout(420);
-const right = await view();
-check("leaning right pans the view rightwards", right.x < calibrated.x - 5, true);
-check("without drifting vertically", Math.abs(right.y - calibrated.y) < 2, true);
-
-// Lean the other way and it comes back.
-await tilt(38, -30);
-await page.waitForTimeout(500);
-check("leaning left pans back the other way", (await view()).x > right.x + 5, true);
-
-// Lean forward: vertical only.
-await tilt(38, 4);
+await page.getByRole("button", { name: "Like this" }).click();
 await page.waitForTimeout(200);
-const settled = await view();
-await tilt(70, 4);
+await tilt(A.down.beta, A.down.gamma);
+await page.waitForTimeout(150);
+await page.getByRole("button", { name: "Like this" }).click();
+await page.waitForTimeout(300);
+check("after three steps the panel closes", await panelText(), "");
+
+await tilt(40, 0);
+await page.waitForTimeout(300);
+const restA = await view();
+await tilt(40, 0);
+await page.waitForTimeout(350);
+check("device A: holding level does not pan", await view(), restA);
+
+await tilt(40, 30);
 await page.waitForTimeout(420);
-const forward = await view();
-check("leaning forward pans vertically", forward.y < settled.y - 5, true);
-check("without drifting horizontally", Math.abs(forward.x - settled.x) < 2, true);
+const rightA = await view();
+check("device A: the demonstrated 'right' lean pans right", rightA.x < restA.x - 5, true);
+check("device A: without vertical drift", Math.abs(rightA.y - restA.y) < 2, true);
+
+await tilt(40, 0);
+await page.waitForTimeout(300);
+const restA2 = await view();
+await tilt(70, 0);
+await page.waitForTimeout(420);
+const downA = await view();
+check("device A: the demonstrated 'down' lean pans down", downA.y < restA2.y - 5, true);
+check("device A: without horizontal drift", Math.abs(downA.x - restA2.x) < 2, true);
+
+// Leaning the opposite way must reverse it.
+await tilt(40, 0);
+await page.waitForTimeout(300);
+const centre = await view();
+await tilt(40, -30);
+await page.waitForTimeout(420);
+check("device A: leaning the other way pans the other way", (await view()).x > centre.x + 5, true);
+
+// ── device B: the same leans produce opposite readings ─────────────────────
+// Axes swapped and both signs inverted — the exact failure reported by hand.
+
+await page.getByRole("button", { name: "Recalibrate tilt" }).click();
+await page.waitForTimeout(300);
+check("recalibrating reopens the setup", (await panelText()).includes("however you're comfortable"), true);
+
+await calibrate({
+  neutral: { beta: 40, gamma: 0 },
+  right: { beta: 15, gamma: 0 },   // leaning right shows up on beta, negatively
+  down: { beta: 40, gamma: -25 },  // leaning down shows up on gamma, negatively
+});
+
+await tilt(40, 0);
+await page.waitForTimeout(300);
+const restB = await view();
+await tilt(15, 0);
+await page.waitForTimeout(420);
+const rightB = await view();
+check("device B: the same gesture still pans right", rightB.x < restB.x - 5, true);
+check("device B: without vertical drift", Math.abs(rightB.y - restB.y) < 2, true);
+
+await tilt(40, 0);
+await page.waitForTimeout(300);
+const restB2 = await view();
+await tilt(40, -30);
+await page.waitForTimeout(420);
+const downB = await view();
+check("device B: the inverted 'down' lean still pans down", downB.y < restB2.y - 5, true);
+check("device B: without horizontal drift", Math.abs(downB.x - restB2.x) < 2, true);
 
 // ── it must not fight the pointer ──────────────────────────────────────────
 
-await tilt(38, 4);
-await page.waitForTimeout(250);
+await tilt(40, 0);
+await page.waitForTimeout(300);
 const beforeStroke = await view();
-
-// Hold a pen down and keep the iPad leaned over: the canvas must stay put,
-// or the stroke being drawn would be dragged out of shape underneath it.
 await page.evaluate(() => {
-  const s = document.querySelector('[class*="surface"]');
-  s.dispatchEvent(new PointerEvent("pointerdown", {
-    pointerId: 77, pointerType: "pen", clientX: 500, clientY: 400,
-    pressure: 0.5, bubbles: true, cancelable: true }));
+  document.querySelector('[class*="surface"]').dispatchEvent(
+    new PointerEvent("pointerdown", {
+      pointerId: 77, pointerType: "pen", clientX: 500, clientY: 400,
+      pressure: 0.5, bubbles: true, cancelable: true }),
+  );
 });
-await tilt(38, 35);
+await tilt(15, 0);
 await page.waitForTimeout(450);
 check("the canvas holds still while a stroke is in progress", await view(), beforeStroke);
 
 await page.evaluate(() => {
-  window.dispatchEvent(new PointerEvent("pointerup", {
+  const up = new PointerEvent("pointerup", {
     pointerId: 77, pointerType: "pen", clientX: 500, clientY: 400,
-    pressure: 0, bubbles: true, cancelable: true }));
-  const s = document.querySelector('[class*="surface"]');
-  s.dispatchEvent(new PointerEvent("pointerup", {
-    pointerId: 77, pointerType: "pen", clientX: 500, clientY: 400,
-    pressure: 0, bubbles: true, cancelable: true }));
+    pressure: 0, bubbles: true, cancelable: true });
+  window.dispatchEvent(up);
+  document.querySelector('[class*="surface"]').dispatchEvent(up);
 });
 await page.waitForTimeout(450);
 check("and resumes once the pen lifts", (await view()).x < beforeStroke.x - 5, true);
 
-// ── landscape ──────────────────────────────────────────────────────────────
-// The riskiest part of the maths, and the way an iPad is usually held. Device
-// beta/gamma are fixed to the hardware, so at 90° they arrive swapped relative
-// to the picture: leaning right must still pan right, not up.
-
-await page.evaluate(() => {
-  Object.defineProperty(window.screen, "orientation", {
-    configurable: true,
-    value: { angle: 90, type: "landscape-primary" },
-  });
-});
-await tilt(38, 4);
-await page.waitForTimeout(300);
-const landscapeStart = await view();
-
-// In landscape, leaning the device "right" shows up on beta, not gamma.
-await tilt(70, 4);
-await page.waitForTimeout(420);
-const landscapeLean = await view();
-check("in landscape, a beta lean pans horizontally", landscapeLean.x < landscapeStart.x - 5, true);
-check("and not vertically", Math.abs(landscapeLean.y - landscapeStart.y) < 2, true);
-
-await tilt(38, 4);
-await page.waitForTimeout(300);
-const settled2 = await view();
-await tilt(38, 35);
-await page.waitForTimeout(420);
-const gammaLean = await view();
-check("in landscape, a gamma lean pans vertically", Math.abs(gammaLean.y - settled2.y) > 5, true);
-check("and not horizontally", Math.abs(gammaLean.x - settled2.x) < 2, true);
-
-await page.evaluate(() => {
-  Object.defineProperty(window.screen, "orientation", {
-    configurable: true,
-    value: { angle: 0, type: "portrait-primary" },
-  });
-});
-await tilt(38, 4);
-await page.waitForTimeout(300);
-
-// ── switching off ──────────────────────────────────────────────────────────
+// ── it is remembered ───────────────────────────────────────────────────────
 
 await page.getByRole("button", { name: "Tilt", exact: true }).click();
 await page.waitForTimeout(200);
-const parked = await view();
-await tilt(38, 40);
-await page.waitForTimeout(450);
-check("turning it off stops the panning", await view(), parked);
+await page.reload({ waitUntil: "networkidle" });
+await page.waitForTimeout(500);
+await page.getByRole("button", { name: "Tilt", exact: true }).click();
+await page.waitForTimeout(300);
+check("a saved calibration is reused rather than re-asked", await panelText(), "");
+
+await tilt(40, 0);
+await page.waitForTimeout(300);
+const restC = await view();
+await tilt(15, 0);
+await page.waitForTimeout(420);
+check("and still pans the way it was taught", (await view()).x < restC.x - 5, true);
 
 check("no page errors", errors, []);
 

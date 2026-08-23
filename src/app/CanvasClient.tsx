@@ -85,6 +85,9 @@ const DOUBLE_TAP_PX = 32;
 /** A finger that travels further than this was a drag, not a tap. */
 const TAP_SLOP_PX = 8;
 
+/** A multi-finger tap has to be brief, or a slow pinch would count as one. */
+const MULTI_TAP_MAX_MS = 320;
+
 /** Framing for a card zoomed into: breathing room, and a sane ceiling. */
 const CARD_ZOOM_PAD = 90;
 const CARD_ZOOM_MAX = 2.2;
@@ -127,7 +130,18 @@ export default function CanvasClient() {
   // Live pointer bookkeeping. Refs, not state: these change at 240Hz and must
   // never trigger a React render.
   const strokeRef = useRef<ActiveStroke | null>(null);
-  const touchesRef = useRef<Map<number, { x: number; y: number }>>(new Map());
+  const touchesRef = useRef<
+    Map<number, { x: number; y: number; startX: number; startY: number }>
+  >(new Map());
+  /** The multi-finger gesture in progress, from first finger down to last up. */
+  const multiRef = useRef<{ startedAt: number; maxFingers: number; moved: boolean } | null>(null);
+  const lastMultiTapRef = useRef<{ t: number; fingers: number } | null>(null);
+  // Undo and redo are declared further down but fired from a gesture handler
+  // above them, so they are reached through refs rather than reordering the
+  // whole file around one gesture.
+  const historyRef = useRef<History>(initHistory(emptyCanvas()));
+  const undoRef = useRef<() => void>(() => {});
+  const redoRef = useRef<() => void>(() => {});
   const penUntilRef = useRef(0);
   const pinchRef = useRef<{ dist: number; cx: number; cy: number } | null>(null);
   const panRef = useRef<{
@@ -172,6 +186,7 @@ export default function CanvasClient() {
     docRef.current = doc;
     editingIdRef.current = editingId;
     editingTextRef.current = editingText;
+    historyRef.current = history;
   });
 
   const showToast = useCallback((message: string) => {
@@ -569,7 +584,18 @@ export default function CanvasClient() {
         const palmPlausible = performance.now() - lastPenAtRef.current < PALM_WINDOW_MS;
         if (palmPlausible && (e.width > PALM_CONTACT_PX || e.height > PALM_CONTACT_PX)) return;
 
-        touchesRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+        if (touchesRef.current.size === 0) {
+          multiRef.current = { startedAt: performance.now(), maxFingers: 0, moved: false };
+        }
+        touchesRef.current.set(e.pointerId, {
+          x: e.clientX,
+          y: e.clientY,
+          startX: e.clientX,
+          startY: e.clientY,
+        });
+        if (multiRef.current) {
+          multiRef.current.maxFingers = Math.max(multiRef.current.maxFingers, touchesRef.current.size);
+        }
         const touches = [...touchesRef.current.values()];
         if (touches.length === 1) {
           pinchRef.current = null;
@@ -655,8 +681,15 @@ export default function CanvasClient() {
 
       if (e.pointerType === "touch") {
         if (isPenPriority()) return;
-        if (!touchesRef.current.has(e.pointerId)) return;
-        touchesRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+        const known = touchesRef.current.get(e.pointerId);
+        if (!known) return;
+        known.x = e.clientX;
+        known.y = e.clientY;
+        // Measure against where this finger landed, not the previous frame, so
+        // slow drift accumulates instead of hiding under the per-frame delta.
+        if (Math.hypot(e.clientX - known.startX, e.clientY - known.startY) > TAP_SLOP_PX) {
+          if (multiRef.current) multiRef.current.moved = true;
+        }
         const touches = [...touchesRef.current.values()];
 
         const drag = nodeDragRef.current;
@@ -745,6 +778,44 @@ export default function CanvasClient() {
   );
 
   /**
+   * Two fingers tapped twice undo; three redo.
+   *
+   * Both are confined to multi-finger taps precisely because one finger is
+   * already busy — selecting, dragging, and double-tapping to zoom. Undo is
+   * also the gesture most worth being able to reach without looking, which is
+   * why it gets the easier of the two.
+   */
+  const handleMultiTap = useCallback(
+    (fingers: number) => {
+      if (fingers !== 2 && fingers !== 3) return;
+
+      const now = performance.now();
+      const last = lastMultiTapRef.current;
+      if (last && now - last.t < DOUBLE_TAP_MS && last.fingers === fingers) {
+        lastMultiTapRef.current = null;
+        if (fingers === 2) {
+          if (!canUndo(historyRef.current)) {
+            showToast("Nothing to undo.");
+            return;
+          }
+          undoRef.current();
+          showToast("Undone.");
+        } else {
+          if (!canRedo(historyRef.current)) {
+            showToast("Nothing to redo.");
+            return;
+          }
+          redoRef.current();
+          showToast("Redone.");
+        }
+        return;
+      }
+      lastMultiTapRef.current = { t: now, fingers };
+    },
+    [showToast],
+  );
+
+  /**
    * A finger that landed and lifted without travelling. Handles selection, and
    * pairs with a previous tap to make a double-tap.
    *
@@ -828,8 +899,21 @@ export default function CanvasClient() {
         moved: true,
       };
     }
-    if (touchesRef.current.size === 0) panRef.current = null;
-  }, [handleTap]);
+    if (touchesRef.current.size === 0) {
+      panRef.current = null;
+      // The whole gesture is over: decide whether it was a multi-finger tap.
+      const multi = multiRef.current;
+      multiRef.current = null;
+      if (
+        multi &&
+        !multi.moved &&
+        multi.maxFingers >= 2 &&
+        performance.now() - multi.startedAt < MULTI_TAP_MAX_MS
+      ) {
+        handleMultiTap(multi.maxFingers);
+      }
+    }
+  }, [handleMultiTap, handleTap]);
 
   /** Round a finished resize and put it on the undo stack as one entry. */
   const finishResize = useCallback((pointerId: number): boolean => {
@@ -923,6 +1007,11 @@ export default function CanvasClient() {
     setDoc(result.doc);
     setEditingId(null);
   }, [history]);
+
+  useEffect(() => {
+    undoRef.current = doUndo;
+    redoRef.current = doRedo;
+  }, [doRedo, doUndo]);
 
   const deleteSelected = useCallback(() => {
     if (!selectedId) return;

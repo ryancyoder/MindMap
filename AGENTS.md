@@ -51,7 +51,8 @@ selects a mode; the shape of the stroke says what they meant:
 Fingers do the rest: one finger drags a card if it starts on one and pans the
 canvas if it doesn't, two fingers pinch-zoom, and a finger tap selects. Double-
 tapping a card zooms to frame it; double-tapping away returns to the view you
-came from, or fits the whole map if there isn't one. The
+came from, or fits the whole map if there isn't one. Two fingers double-tapped
+undo; three redo. The
 grip on a selected card's corner resizes it — the only control where pen and
 finger do the same thing, so it is checked before either input branch.
 
@@ -95,6 +96,19 @@ Only programmatic moves animate (`animateTransform`). Panning and pinching must
 track the finger exactly — a transition there reads as lag, not polish — and
 any new contact calls `cancelAnim()`, so direct manipulation always beats an
 animation in flight.
+
+## Multi-finger gestures
+
+Undo and redo live on two- and three-finger double-taps because one finger is
+already busy selecting, dragging and zooming. Their danger is false positives,
+not misses: a pinch that barely moves must never quietly undo work. Three
+guards prevent that — the whole gesture must finish inside `MULTI_TAP_MAX_MS`,
+no finger may travel past `TAP_SLOP_PX`, and **movement is measured from where
+each finger landed**, not from the previous frame, because slow drift hides
+under a per-frame delta.
+
+`handleMultiTap` fires above where `doUndo`/`doRedo` are declared, so it
+reaches them through refs rather than reordering the file around one gesture.
 
 ## Card sizing
 

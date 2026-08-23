@@ -33,7 +33,7 @@ double-tap the empty canvas to come back out.
 Text goes in with **Scribble**: the card opens a real text field, so you
 handwrite into it with the Pencil and never see a keyboard.
 
-Undo is ⌘Z, and every gesture is undoable — which is the honest answer to a
+**Two fingers double-tapped undo. Three redo.** Undo is also ⌘Z, and every gesture is undoable — which is the honest answer to a
 recognizer that occasionally reads a stroke wrong.
 
 Cards grow to fit what you write, so a long thought is never clipped. Drag the

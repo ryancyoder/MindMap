@@ -17,6 +17,7 @@ node scripts/verify-touch.mjs             # pan, pinch, dragging cards
 node scripts/verify-library.mjs           # card sizing and the map library
 node scripts/verify-paste.mjs             # pasting and copying map JSON
 node scripts/verify-doubletap.mjs         # double-tap to zoom
+node scripts/verify-multitouch.mjs        # two/three-finger undo and redo
 node scripts/verify-roundtrip.mjs         # .canvas fidelity
 ```
 
@@ -81,6 +82,17 @@ negative: taps that are too slow, too far apart, on different targets, or that
 followed a pan must NOT pair. A gesture recognizer is judged by what it
 declines as much as by what it catches — an over-eager double-tap would fire
 while you were simply working.
+
+`verify-multitouch.mjs` covers the undo and redo gestures, and its risk is
+false positives rather than misses — a pinch that barely moves must never
+quietly undo your work. It therefore checks a drifting two-finger gesture, a
+slow two-finger rest, mismatched finger counts, and a one-finger double-tap,
+all of which must decline.
+
+Note when reading its expectations: creating a card and committing its text are
+**two** history entries, so a card typed into costs two undos. An earlier
+version of this file counted them as one and looked like an off-by-one in the
+app.
 
 The lesson generalizes three times over: when a check drives the app through a
 different input path than the user does, or feeds it idealized input the user

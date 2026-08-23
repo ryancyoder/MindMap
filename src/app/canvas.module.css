@@ -231,6 +231,14 @@
   color: var(--danger);
 }
 
+.selectionCount {
+  padding: 0 4px;
+  color: var(--text-muted);
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
 .zoomLabel {
   min-width: 52px;
   color: var(--text-muted);

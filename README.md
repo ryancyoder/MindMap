@@ -33,6 +33,10 @@ double-tap the empty canvas to come back out.
 Text goes in with **Scribble**: the card opens a real text field, so you
 handwrite into it with the Pencil and never see a keyboard.
 
+**Hold a finger on a card** to add it to the selection (shift-click on a
+keyboard), then move them together, or line them up with **Column**, **Row**
+and **Space**. ⌘A takes everything.
+
 **Two fingers double-tapped undo. Three redo.** Undo is also ⌘Z, and every gesture is undoable — which is the honest answer to a
 recognizer that occasionally reads a stroke wrong.
 

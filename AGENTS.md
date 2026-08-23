@@ -97,6 +97,28 @@ track the finger exactly — a transition there reads as lag, not polish — and
 any new contact calls `cancelAnim()`, so direct manipulation always beats an
 animation in flight.
 
+## Selection
+
+Selection is a **set** (`selectedIds`), not one id. Commands act on "the
+selection" rather than "the selected card", which is what makes align, bulk
+colour, multi-card drag and multi-delete fall out of one model instead of four
+special cases. Keep it that way when adding commands.
+
+Two ways to extend a selection, one per input mode: **shift-click** for a
+keyboard, **long-press** (`LONG_PRESS_MS`) for a finger — the only free
+single-finger gesture once tap, drag and double-tap were spoken for. Both
+toggle, so the same gesture removes a card again. `longPressFiredRef` stops the
+lift that follows a long press from also registering as a tap.
+
+Dragging a card that is *in* the selection moves the whole selection; dragging
+one that is not moves only it. The resize grip only appears when exactly one
+card is selected, since resizing several at once has no obvious meaning.
+
+Alignment works on **centres, not edges**. Cards differ in width, and a column
+with matching centres reads as straight where matching left edges does not.
+Align aims at the centre of the selection so the group stays put rather than
+sliding toward whichever card happens to be first.
+
 ## Multi-finger gestures
 
 Undo and redo live on two- and three-finger double-taps because one finger is

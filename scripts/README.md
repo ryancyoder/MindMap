@@ -18,6 +18,7 @@ node scripts/verify-library.mjs           # card sizing and the map library
 node scripts/verify-paste.mjs             # pasting and copying map JSON
 node scripts/verify-doubletap.mjs         # double-tap to zoom
 node scripts/verify-multitouch.mjs        # two/three-finger undo and redo
+node scripts/verify-multiselect.mjs       # multi-select, align, bulk move
 node scripts/verify-roundtrip.mjs         # .canvas fidelity
 ```
 
@@ -93,6 +94,11 @@ Note when reading its expectations: creating a card and committing its text are
 **two** history entries, so a card typed into costs two undos. An earlier
 version of this file counted them as one and looked like an off-by-one in the
 app.
+
+`verify-multiselect.mjs` covers both ways into a multi-selection — shift-click
+and long-press — and the commands it unlocks. Alignment is checked on centres
+rather than edges, and each command is checked to be a single undo rather than
+one per card.
 
 The lesson generalizes three times over: when a check drives the app through a
 different input path than the user does, or feeds it idealized input the user

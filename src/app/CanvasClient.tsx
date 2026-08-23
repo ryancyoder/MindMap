@@ -88,6 +88,9 @@ const TAP_SLOP_PX = 8;
 /** A multi-finger tap has to be brief, or a slow pinch would count as one. */
 const MULTI_TAP_MAX_MS = 320;
 
+/** Hold a finger on a card this long to add it to (or drop it from) the selection. */
+const LONG_PRESS_MS = 450;
+
 /** Framing for a card zoomed into: breathing room, and a sane ceiling. */
 const CARD_ZOOM_PAD = 90;
 const CARD_ZOOM_MAX = 2.2;
@@ -105,7 +108,10 @@ export default function CanvasClient() {
   const [doc, setDoc] = useState<Canvas>(emptyCanvas);
   const [record, setRecord] = useState<CanvasRecord | null>(null);
   const [transform, setTransform] = useState<Transform>({ x: 0, y: 0, k: 1 });
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  // Selection is a set. Almost every command below acts on "the selection"
+  // rather than "the selected card", which is what makes align, bulk colour
+  // and multi-card drag fall out of one model instead of three special cases.
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingText, setEditingText] = useState("");
   const [history, setHistory] = useState<History>(() => initHistory(emptyCanvas()));
@@ -164,6 +170,12 @@ export default function CanvasClient() {
     moved: boolean;
   } | null>(null);
   const lastPenAtRef = useRef(0);
+  const selectedIdsRef = useRef<string[]>([]);
+  /** Modifier state captured at pointerdown, since a tap is judged on lift. */
+  const gestureShiftRef = useRef(false);
+  /** Long-press on a card is the finger's equivalent of shift-click. */
+  const longPressRef = useRef<{ pointerId: number; timer: number } | null>(null);
+  const longPressFiredRef = useRef(false);
   const resizeRef = useRef<{
     pointerId: number;
     nodeId: string;
@@ -187,7 +199,16 @@ export default function CanvasClient() {
     editingIdRef.current = editingId;
     editingTextRef.current = editingText;
     historyRef.current = history;
+    selectedIdsRef.current = selectedIds;
   });
+
+  const selectOnly = useCallback((id: string | null) => {
+    setSelectedIds(id ? [id] : []);
+  }, []);
+
+  const toggleSelected = useCallback((id: string) => {
+    setSelectedIds((ids) => (ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id]));
+  }, []);
 
   const showToast = useCallback((message: string) => {
     const id = Date.now() + Math.random();
@@ -335,10 +356,10 @@ export default function CanvasClient() {
   }, []);
 
   const beginEditing = useCallback((node: CanvasNode) => {
-    setSelectedId(node.id);
+    selectOnly(node.id);
     setEditingId(node.id);
     setEditingText(node.type === "text" ? node.text : nodeDisplayText(node));
-  }, []);
+  }, [selectOnly]);
 
   const applyGesture = useCallback(
     (points: Pt[]) => {
@@ -348,14 +369,20 @@ export default function CanvasClient() {
       switch (gesture.kind) {
         case "tap": {
           if (!gesture.nodeId) {
-            setSelectedId(null);
+            setSelectedIds([]);
             return;
           }
           const node = current.nodes.find((n) => n.id === gesture.nodeId);
           if (!node) return;
           // Tapping the node you already have selected opens it for text.
-          if (selectedId === node.id) beginEditing(node);
-          else setSelectedId(node.id);
+          if (selectedIdsRef.current.length === 1 && selectedIdsRef.current[0] === node.id) {
+            beginEditing(node);
+          } else if (gestureShiftRef.current) {
+            // Shift keeps what is already selected and toggles this card.
+            toggleSelected(node.id);
+          } else {
+            selectOnly(node.id);
+          }
           return;
         }
 
@@ -414,7 +441,7 @@ export default function CanvasClient() {
               !removedEdgeIds.has(e.id) && !nodeIds.has(e.fromNode) && !nodeIds.has(e.toNode),
           );
           applyDoc({ nodes, edges });
-          if (selectedId && nodeIds.has(selectedId)) setSelectedId(null);
+          setSelectedIds((ids) => ids.filter((id) => !nodeIds.has(id)));
           const parts: string[] = [];
           if (nodeIds.size) parts.push(`${nodeIds.size} card${nodeIds.size > 1 ? "s" : ""}`);
           if (removedEdgeIds.size) {
@@ -436,7 +463,7 @@ export default function CanvasClient() {
         }
       }
     },
-    [applyDoc, beginEditing, createTextNode, selectedId, showToast],
+    [applyDoc, beginEditing, createTextNode, selectOnly, showToast, toggleSelected],
   );
 
   // ─── TEXT EDITING ─────────────────────────────────────────────────────────
@@ -612,6 +639,21 @@ export default function CanvasClient() {
               moved: false,
             };
             panRef.current = null;
+
+            // Held still on a card, a finger toggles it into the selection —
+            // the touch equivalent of shift-clicking, and the only unused
+            // single-finger gesture left.
+            longPressFiredRef.current = false;
+            longPressRef.current = {
+              pointerId: e.pointerId,
+              timer: window.setTimeout(() => {
+                const drag = nodeDragRef.current;
+                if (!drag || drag.pointerId !== e.pointerId || drag.moved) return;
+                longPressFiredRef.current = true;
+                longPressRef.current = null;
+                toggleSelected(hit.id);
+              }, LONG_PRESS_MS),
+            };
           } else {
             nodeDragRef.current = null;
             panRef.current = {
@@ -638,6 +680,7 @@ export default function CanvasClient() {
 
       // Pen and mouse both draw, so the gestures are testable without an iPad.
       penUntilRef.current = performance.now() + PEN_PRIORITY_MS;
+      gestureShiftRef.current = e.shiftKey;
       if (e.pointerType === "pen") lastPenAtRef.current = performance.now();
       touchesRef.current.clear();
       panRef.current = null;
@@ -660,7 +703,7 @@ export default function CanvasClient() {
         // Non-fatal: window-level events still complete the stroke.
       }
     },
-    [cancelAnim, commitEditing, editingId, toWorld],
+    [cancelAnim, commitEditing, editingId, toggleSelected, toWorld],
   );
 
   const onPointerMove = useCallback(
@@ -698,13 +741,23 @@ export default function CanvasClient() {
           const dx = world.x - drag.lastWorld.x;
           const dy = world.y - drag.lastWorld.y;
           drag.lastWorld = world;
+          drag.lastScreen = { x: e.clientX, y: e.clientY };
           drag.moved = true;
+          if (longPressRef.current) {
+            clearTimeout(longPressRef.current.timer);
+            longPressRef.current = null;
+          }
           // Move live without touching history; the whole drag becomes one
           // undo entry when the finger lifts.
+          // Dragging a card that is part of a selection moves the whole
+          // selection; dragging an unselected one moves only it.
+          const moving = selectedIdsRef.current.includes(drag.nodeId)
+            ? new Set(selectedIdsRef.current)
+            : new Set([drag.nodeId]);
           setDoc((d) => ({
             ...d,
             nodes: d.nodes.map((n) =>
-              n.id === drag.nodeId ? ({ ...n, x: n.x + dx, y: n.y + dy } as CanvasNode) : n,
+              moving.has(n.id) ? ({ ...n, x: n.x + dx, y: n.y + dy } as CanvasNode) : n,
             ),
           }));
           return;
@@ -854,26 +907,36 @@ export default function CanvasClient() {
       }
 
       lastTapRef.current = { t: now, x: at.x, y: at.y, nodeId };
-      setSelectedId(nodeId);
+      selectOnly(nodeId);
     },
-    [animateTransform, fitTransform, transformForCard],
+    [animateTransform, fitTransform, selectOnly, transformForCard],
   );
 
   const endTouch = useCallback((pointerId: number) => {
+    if (longPressRef.current && longPressRef.current.pointerId === pointerId) {
+      clearTimeout(longPressRef.current.timer);
+      longPressRef.current = null;
+    }
     const drag = nodeDragRef.current;
     if (drag && drag.pointerId === pointerId) {
       nodeDragRef.current = null;
       if (drag.moved) {
+        const moved = selectedIdsRef.current.includes(drag.nodeId)
+          ? new Set(selectedIdsRef.current)
+          : new Set([drag.nodeId]);
         // Snap to whole pixels, since the format stores integers anyway.
         setDoc((d) => ({
           ...d,
           nodes: d.nodes.map((n) =>
-            n.id === drag.nodeId
+            moved.has(n.id)
               ? ({ ...n, x: Math.round(n.x), y: Math.round(n.y) } as CanvasNode)
               : n,
           ),
         }));
         setDragCommit((t) => t + 1);
+      } else if (longPressFiredRef.current) {
+        // The long press already changed the selection; the lift is not a tap.
+        longPressFiredRef.current = false;
       } else {
         handleTap(drag.nodeId, drag.lastScreen);
       }
@@ -1014,22 +1077,24 @@ export default function CanvasClient() {
   }, [doRedo, doUndo]);
 
   const deleteSelected = useCallback(() => {
-    if (!selectedId) return;
+    const ids = new Set(selectedIds);
+    if (ids.size === 0) return;
     const current = docRef.current;
     applyDoc({
-      nodes: current.nodes.filter((n) => n.id !== selectedId),
-      edges: current.edges.filter((e) => e.fromNode !== selectedId && e.toNode !== selectedId),
+      nodes: current.nodes.filter((n) => !ids.has(n.id)),
+      edges: current.edges.filter((e) => !ids.has(e.fromNode) && !ids.has(e.toNode)),
     });
-    setSelectedId(null);
+    setSelectedIds([]);
     setEditingId(null);
-  }, [applyDoc, selectedId]);
+  }, [applyDoc, selectedIds]);
 
   const setSelectedColor = useCallback(
     (color: string | null) => {
-      if (!selectedId) return;
+      const ids = new Set(selectedIds);
+      if (ids.size === 0) return;
       const current = docRef.current;
       const nodes = current.nodes.map((n) => {
-        if (n.id !== selectedId) return n;
+        if (!ids.has(n.id)) return n;
         const next = { ...n } as CanvasNode;
         if (color) next.color = color;
         else delete next.color;
@@ -1037,8 +1102,78 @@ export default function CanvasClient() {
       });
       applyDoc({ ...current, nodes });
     },
-    [applyDoc, selectedId],
+    [applyDoc, selectedIds],
   );
+
+  /**
+   * Line the selection up on one axis, by centre rather than by edge — cards
+   * differ in width, and a column of boxes with matching centres reads as
+   * straight where matching left edges does not.
+   *
+   * axis "x" aligns centres horizontally, producing a vertical column.
+   */
+  const alignSelected = useCallback(
+    (axis: "x" | "y") => {
+      const ids = new Set(selectedIds);
+      if (ids.size < 2) return;
+      const current = docRef.current;
+      const chosen = current.nodes.filter((n) => ids.has(n.id));
+      const size = axis === "x" ? ("width" as const) : ("height" as const);
+
+      // Aim at the centre of what is selected, so the group stays put rather
+      // than sliding towards whichever card happens to be first.
+      const centre =
+        chosen.reduce((sum, n) => sum + n[axis] + n[size] / 2, 0) / chosen.length;
+
+      applyDoc({
+        ...current,
+        nodes: current.nodes.map((n) =>
+          ids.has(n.id) ? ({ ...n, [axis]: Math.round(centre - n[size] / 2) } as CanvasNode) : n,
+        ),
+      });
+      showToast(axis === "x" ? "Aligned into a column." : "Aligned into a row.");
+    },
+    [applyDoc, selectedIds, showToast],
+  );
+
+  /** Even the gaps along whichever axis the selection is more spread out on. */
+  const distributeSelected = useCallback(() => {
+    const ids = new Set(selectedIds);
+    if (ids.size < 3) return;
+    const current = docRef.current;
+    const chosen = current.nodes.filter((n) => ids.has(n.id));
+
+    const spread = (axis: "x" | "y", size: "width" | "height") =>
+      Math.max(...chosen.map((n) => n[axis] + n[size])) - Math.min(...chosen.map((n) => n[axis]));
+    const vertical = spread("y", "height") > spread("x", "width");
+    const axis = vertical ? ("y" as const) : ("x" as const);
+    const size = vertical ? ("height" as const) : ("width" as const);
+
+    const order = [...chosen].sort((a, b) => a[axis] - b[axis]);
+    const start = order[0][axis];
+    const end = order[order.length - 1][axis] + order[order.length - 1][size];
+    const occupied = order.reduce((sum, n) => sum + n[size], 0);
+    const gap = (end - start - occupied) / (order.length - 1);
+
+    const placed = new Map<string, number>();
+    let cursor = start;
+    for (const node of order) {
+      placed.set(node.id, Math.round(cursor));
+      cursor += node[size] + gap;
+    }
+
+    applyDoc({
+      ...current,
+      nodes: current.nodes.map((n) =>
+        placed.has(n.id) ? ({ ...n, [axis]: placed.get(n.id)! } as CanvasNode) : n,
+      ),
+    });
+    showToast("Spaced evenly.");
+  }, [applyDoc, selectedIds, showToast]);
+
+  const selectAll = useCallback(() => {
+    setSelectedIds(docRef.current.nodes.map((n) => n.id));
+  }, []);
 
   const zoomToFit = useCallback(() => {
     const next = fitTransform();
@@ -1062,7 +1197,7 @@ export default function CanvasClient() {
         setRecord(next);
         setDoc(canvas);
         setHistory(initHistory(canvas));
-        setSelectedId(null);
+        setSelectedIds([]);
         setEditingId(null);
         rememberLastOpened(next.id);
         await putCanvas(next);
@@ -1122,7 +1257,7 @@ export default function CanvasClient() {
     setRecord(next);
     setDoc(next.doc);
     setHistory(initHistory(next.doc));
-    setSelectedId(null);
+    setSelectedIds([]);
     setEditingId(null);
     rememberLastOpened(next.id);
   }, []);
@@ -1227,7 +1362,7 @@ export default function CanvasClient() {
     if (!pasteResult?.canvas) return;
     // Replacing goes through applyDoc, so a mistaken paste is one undo away.
     applyDoc(pasteResult.canvas);
-    setSelectedId(null);
+    setSelectedIds([]);
     setEditingId(null);
     closePaste();
     showToast("Replaced this map. Undo if that wasn't right.");
@@ -1275,13 +1410,17 @@ export default function CanvasClient() {
         return;
       }
       if (e.key === "Backspace" || e.key === "Delete") {
-        if (selectedId) {
+        if (selectedIds.length) {
           e.preventDefault();
           deleteSelected();
         }
         return;
       }
-      if (e.key === "Escape") setSelectedId(null);
+      if (e.key === "Escape") setSelectedIds([]);
+      if (e.key.toLowerCase() === "a" && (e.metaKey || e.ctrlKey)) {
+        e.preventDefault();
+        selectAll();
+      }
       if (e.key === "0" && (e.metaKey || e.ctrlKey)) {
         e.preventDefault();
         zoomToFit();
@@ -1289,12 +1428,12 @@ export default function CanvasClient() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [commitEditing, deleteSelected, doRedo, doUndo, selectedId, zoomToFit]);
+  }, [commitEditing, deleteSelected, doRedo, doUndo, selectAll, selectedIds, zoomToFit]);
 
   // ─── RENDER ───────────────────────────────────────────────────────────────
 
   const edgePaths = useMemo(() => buildEdgePaths(doc), [doc]);
-  const selectedNode = doc.nodes.find((n) => n.id === selectedId) ?? null;
+  const selectedNodes = doc.nodes.filter((n) => selectedIds.includes(n.id));
 
   return (
     <div className={styles.root}>
@@ -1354,7 +1493,7 @@ export default function CanvasClient() {
                 className={[
                   styles.node,
                   node.type === "group" ? styles.groupNode : "",
-                  selectedId === node.id ? styles.nodeSelected : "",
+                  selectedIds.includes(node.id) ? styles.nodeSelected : "",
                 ]
                   .filter(Boolean)
                   .join(" ")}
@@ -1367,7 +1506,7 @@ export default function CanvasClient() {
                 }}
               >
                 {accent ? <span className={styles.nodeStripe} style={{ background: accent }} /> : null}
-                {selectedId === node.id && !isEditing ? (
+                {selectedIds.length === 1 && selectedIds[0] === node.id && !isEditing ? (
                   <span
                     className={styles.resizeHandle}
                     data-resize-handle={node.id}
@@ -1452,7 +1591,7 @@ export default function CanvasClient() {
         <span className={styles.zoomLabel}>{Math.round(transform.k * 100)}%</span>
       </div>
 
-      {selectedNode ? (
+      {selectedNodes.length > 0 ? (
         <div className={`${styles.chrome} ${styles.inspector}`}>
           <div className={styles.swatches}>
             <button
@@ -1470,15 +1609,43 @@ export default function CanvasClient() {
               />
             ))}
           </div>
-          <button
-            className={styles.button}
-            onClick={() => {
-              const node = docRef.current.nodes.find((n) => n.id === selectedId);
-              if (node) beginEditing(node);
-            }}
-          >
-            Edit
-          </button>
+          {selectedNodes.length === 1 ? (
+            <button
+              className={styles.button}
+              onClick={() => {
+                const node = docRef.current.nodes.find((n) => n.id === selectedIds[0]);
+                if (node) beginEditing(node);
+              }}
+            >
+              Edit
+            </button>
+          ) : (
+            <>
+              <span className={styles.selectionCount}>{selectedNodes.length} selected</span>
+              <button
+                className={styles.button}
+                onClick={() => alignSelected("x")}
+                title="Line them up in a column"
+              >
+                Column
+              </button>
+              <button
+                className={styles.button}
+                onClick={() => alignSelected("y")}
+                title="Line them up in a row"
+              >
+                Row
+              </button>
+              <button
+                className={styles.button}
+                onClick={distributeSelected}
+                disabled={selectedNodes.length < 3}
+                title="Even out the gaps"
+              >
+                Space
+              </button>
+            </>
+          )}
           <button className={`${styles.button} ${styles.danger}`} onClick={deleteSelected}>
             Delete
           </button>

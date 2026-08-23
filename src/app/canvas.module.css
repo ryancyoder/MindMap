@@ -16,6 +16,7 @@
   -webkit-user-select: none;
   user-select: none;
   cursor: crosshair;
+
   background-image: radial-gradient(circle, var(--grid-dot) 1px, transparent 1px);
   background-repeat: repeat;
 }
@@ -225,6 +226,14 @@
 .button:disabled {
   opacity: 0.35;
   cursor: default;
+}
+
+/* A toggle that is currently on. */
+.buttonOn {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
 }
 
 .danger {

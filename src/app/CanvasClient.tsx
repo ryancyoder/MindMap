@@ -26,6 +26,7 @@ import {
   type TextNode,
 } from "@/lib/jsoncanvas";
 import { nodeAt, nodeRect, recognize, RECOGNIZER } from "@/lib/recognize";
+import { rectsOverlap, snap } from "@/lib/geometry";
 import {
   canRedo,
   canUndo,
@@ -105,6 +106,9 @@ const CARD_ZOOM_MAX = 2.2;
 /** Programmatic zooms are animated; direct manipulation never is. */
 const ZOOM_ANIM_MS = 260;
 
+/** Matches the dot grid in canvas.module.css. Change both together. */
+const GRID = 28;
+
 const MIN_ZOOM = 0.15;
 const MAX_ZOOM = 4;
 
@@ -139,6 +143,8 @@ export default function CanvasClient() {
   const [cloudState, setCloudState] = useState<"idle" | "loading" | "off" | "error">("idle");
   const [cloudError, setCloudError] = useState("");
   const [busyCloudId, setBusyCloudId] = useState<string | null>(null);
+  const [snapToGrid, setSnapToGrid] = useState(false);
+  const [penMode, setPenMode] = useState<"draw" | "select">("draw");
 
   const surfaceRef = useRef<HTMLDivElement>(null);
   const inkRef = useRef<HTMLCanvasElement>(null);
@@ -176,9 +182,19 @@ export default function CanvasClient() {
   const nodeDragRef = useRef<{
     pointerId: number;
     nodeId: string;
-    lastWorld: { x: number; y: number };
+    startWorld: { x: number; y: number };
     lastScreen: { x: number; y: number };
     moved: boolean;
+    /** Where every moving card started, so the drag is absolute, not cumulative. */
+    origins: Map<string, { x: number; y: number }>;
+  } | null>(null);
+  const snapRef = useRef(false);
+  const penModeRef = useRef<"draw" | "select">("draw");
+  const lassoRef = useRef<{
+    pointerId: number;
+    start: { x: number; y: number };
+    current: { x: number; y: number };
+    additive: boolean;
   } | null>(null);
   const lastPenAtRef = useRef(0);
   const selectedIdsRef = useRef<string[]>([]);
@@ -211,6 +227,8 @@ export default function CanvasClient() {
     editingTextRef.current = editingText;
     historyRef.current = history;
     selectedIdsRef.current = selectedIds;
+    snapRef.current = snapToGrid;
+    penModeRef.current = penMode;
   });
 
   const selectOnly = useCallback((id: string | null) => {
@@ -242,6 +260,12 @@ export default function CanvasClient() {
         }
       }
       if (cancelled) return;
+      try {
+        setSnapToGrid(localStorage.getItem("mindmap_snap") === "1");
+        setPenMode(localStorage.getItem("mindmap_pen_mode") === "select" ? "select" : "draw");
+      } catch {
+        // Private browsing can refuse reads; the defaults are fine.
+      }
       const next = loaded ?? newRecord("Untitled map");
       setRecord(next);
       setDoc(next.doc);
@@ -321,6 +345,26 @@ export default function CanvasClient() {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, canvas.width / dpr, canvas.height / dpr);
 
+    const t0 = transformRef.current;
+    const lasso = lassoRef.current;
+    if (lasso) {
+      const x = Math.min(lasso.start.x, lasso.current.x) * t0.k + t0.x;
+      const y = Math.min(lasso.start.y, lasso.current.y) * t0.k + t0.y;
+      const w = Math.abs(lasso.current.x - lasso.start.x) * t0.k;
+      const h = Math.abs(lasso.current.y - lasso.start.y) * t0.k;
+      const style0 = getComputedStyle(document.documentElement);
+      const accent = style0.getPropertyValue("--accent").trim() || "#3f6cd4";
+      ctx.save();
+      ctx.fillStyle = style0.getPropertyValue("--accent-soft").trim() || "rgba(63,108,212,0.14)";
+      ctx.strokeStyle = accent;
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([6, 4]);
+      ctx.fillRect(x, y, w, h);
+      ctx.strokeRect(x, y, w, h);
+      ctx.restore();
+      return;
+    }
+
     const stroke = strokeRef.current;
     if (!stroke || stroke.points.length < 2) return;
 
@@ -354,17 +398,46 @@ export default function CanvasClient() {
 
   // ─── GESTURE APPLICATION ──────────────────────────────────────────────────
 
+  /** Snap a world coordinate to the grid, when the option is on. */
+  const gridSnap = useCallback((value: number) => {
+    return snapRef.current ? snap(value, GRID) : Math.round(value);
+  }, []);
+
+  /**
+   * Start dragging a card. Records where every card that will move started, so
+   * each frame positions them absolutely — accumulating per-frame deltas makes
+   * a snapped card creep, because every frame re-snaps an already-snapped value.
+   */
+  const beginNodeDrag = useCallback(
+    (
+      pointerId: number,
+      nodeId: string,
+      world: { x: number; y: number },
+      screen: { x: number; y: number },
+    ) => {
+      const moving = selectedIdsRef.current.includes(nodeId)
+        ? new Set(selectedIdsRef.current)
+        : new Set([nodeId]);
+      const origins = new Map<string, { x: number; y: number }>();
+      for (const n of docRef.current.nodes) {
+        if (moving.has(n.id)) origins.set(n.id, { x: n.x, y: n.y });
+      }
+      return { pointerId, nodeId, startWorld: world, lastScreen: screen, moved: false, origins };
+    },
+    [],
+  );
+
   const createTextNode = useCallback((rect: Rect): TextNode => {
     return {
       id: makeId(),
       type: "text",
       text: "",
-      x: Math.round(rect.x),
-      y: Math.round(rect.y),
+      x: gridSnap(rect.x),
+      y: gridSnap(rect.y),
       width: Math.round(rect.width),
       height: Math.round(rect.height),
     };
-  }, []);
+  }, [gridSnap]);
 
   const beginEditing = useCallback((node: CanvasNode) => {
     selectOnly(node.id);
@@ -642,13 +715,10 @@ export default function CanvasClient() {
           const world = toWorld(e.clientX, e.clientY);
           const hit = nodeAt(docRef.current.nodes, world);
           if (hit) {
-            nodeDragRef.current = {
-              pointerId: e.pointerId,
-              nodeId: hit.id,
-              lastWorld: world,
-              lastScreen: { x: e.clientX, y: e.clientY },
-              moved: false,
-            };
+            nodeDragRef.current = beginNodeDrag(e.pointerId, hit.id, world, {
+              x: e.clientX,
+              y: e.clientY,
+            });
             panRef.current = null;
 
             // Held still on a card, a finger toggles it into the selection —
@@ -689,6 +759,39 @@ export default function CanvasClient() {
         return;
       }
 
+      // Select mode turns the pen into a pointer instead of a nib: it drags
+      // cards and lassoes empty space. Draw stays the default, because a tool
+      // switch is exactly the tax the gesture model exists to avoid — this is
+      // opt-in, for when you are arranging rather than thinking.
+      if (penModeRef.current === "select") {
+        cancelAnim();
+        const world = toWorld(e.clientX, e.clientY);
+        const hit = nodeAt(docRef.current.nodes, world);
+        if (hit) {
+          if (!selectedIdsRef.current.includes(hit.id)) {
+            if (e.shiftKey) toggleSelected(hit.id);
+            else selectOnly(hit.id);
+          }
+          nodeDragRef.current = beginNodeDrag(e.pointerId, hit.id, world, {
+            x: e.clientX,
+            y: e.clientY,
+          });
+        } else {
+          lassoRef.current = {
+            pointerId: e.pointerId,
+            start: world,
+            current: world,
+            additive: e.shiftKey,
+          };
+        }
+        try {
+          e.currentTarget.setPointerCapture(e.pointerId);
+        } catch {
+          // Non-fatal; window-level events still finish the gesture.
+        }
+        return;
+      }
+
       // Pen and mouse both draw, so the gestures are testable without an iPad.
       penUntilRef.current = performance.now() + PEN_PRIORITY_MS;
       gestureShiftRef.current = e.shiftKey;
@@ -714,7 +817,7 @@ export default function CanvasClient() {
         // Non-fatal: window-level events still complete the stroke.
       }
     },
-    [cancelAnim, commitEditing, editingId, toggleSelected, toWorld],
+    [beginNodeDrag, cancelAnim, commitEditing, editingId, selectOnly, toggleSelected, toWorld],
   );
 
   const onPointerMove = useCallback(
@@ -722,13 +825,44 @@ export default function CanvasClient() {
       const resize = resizeRef.current;
       if (resize && resize.pointerId === e.pointerId) {
         const world = toWorld(e.clientX, e.clientY);
-        const width = Math.max(MIN_CARD.width, resize.origWidth + (world.x - resize.startWorld.x));
-        const height = Math.max(MIN_CARD.height, resize.origHeight + (world.y - resize.startWorld.y));
+        const width = Math.max(
+          MIN_CARD.width,
+          gridSnap(resize.origWidth + (world.x - resize.startWorld.x)),
+        );
+        const height = Math.max(
+          MIN_CARD.height,
+          gridSnap(resize.origHeight + (world.y - resize.startWorld.y)),
+        );
         setDoc((doc0) => ({
           ...doc0,
           nodes: doc0.nodes.map((n) =>
             n.id === resize.nodeId ? ({ ...n, width, height } as CanvasNode) : n,
           ),
+        }));
+        return;
+      }
+
+      // Card dragging is no longer touch-only: a pen in select mode uses the
+      // same path, so it runs before the input branches rather than inside one.
+      const drag = nodeDragRef.current;
+      if (drag && drag.pointerId === e.pointerId) {
+        const world = toWorld(e.clientX, e.clientY);
+        const dx = world.x - drag.startWorld.x;
+        const dy = world.y - drag.startWorld.y;
+        drag.lastScreen = { x: e.clientX, y: e.clientY };
+        drag.moved = true;
+        if (longPressRef.current) {
+          clearTimeout(longPressRef.current.timer);
+          longPressRef.current = null;
+        }
+        // Live, without touching history; the whole drag is one undo entry.
+        setDoc((d) => ({
+          ...d,
+          nodes: d.nodes.map((n) => {
+            const from = drag.origins.get(n.id);
+            if (!from) return n;
+            return { ...n, x: gridSnap(from.x + dx), y: gridSnap(from.y + dy) } as CanvasNode;
+          }),
         }));
         return;
       }
@@ -745,34 +879,6 @@ export default function CanvasClient() {
           if (multiRef.current) multiRef.current.moved = true;
         }
         const touches = [...touchesRef.current.values()];
-
-        const drag = nodeDragRef.current;
-        if (touches.length === 1 && drag && drag.pointerId === e.pointerId) {
-          const world = toWorld(e.clientX, e.clientY);
-          const dx = world.x - drag.lastWorld.x;
-          const dy = world.y - drag.lastWorld.y;
-          drag.lastWorld = world;
-          drag.lastScreen = { x: e.clientX, y: e.clientY };
-          drag.moved = true;
-          if (longPressRef.current) {
-            clearTimeout(longPressRef.current.timer);
-            longPressRef.current = null;
-          }
-          // Move live without touching history; the whole drag becomes one
-          // undo entry when the finger lifts.
-          // Dragging a card that is part of a selection moves the whole
-          // selection; dragging an unselected one moves only it.
-          const moving = selectedIdsRef.current.includes(drag.nodeId)
-            ? new Set(selectedIdsRef.current)
-            : new Set([drag.nodeId]);
-          setDoc((d) => ({
-            ...d,
-            nodes: d.nodes.map((n) =>
-              moving.has(n.id) ? ({ ...n, x: n.x + dx, y: n.y + dy } as CanvasNode) : n,
-            ),
-          }));
-          return;
-        }
 
         if (touches.length === 1 && panRef.current) {
           const pan = panRef.current;
@@ -812,6 +918,13 @@ export default function CanvasClient() {
         return;
       }
 
+      const lasso = lassoRef.current;
+      if (lasso && lasso.pointerId === e.pointerId) {
+        lasso.current = toWorld(e.clientX, e.clientY);
+        drawInk();
+        return;
+      }
+
       const stroke = strokeRef.current;
       if (!stroke || stroke.pointerId !== e.pointerId) return;
       penUntilRef.current = performance.now() + PEN_PRIORITY_MS;
@@ -838,7 +951,7 @@ export default function CanvasClient() {
       }
       drawInk();
     },
-    [drawInk, toWorld],
+    [drawInk, gridSnap, toWorld],
   );
 
   /**
@@ -932,18 +1045,8 @@ export default function CanvasClient() {
     if (drag && drag.pointerId === pointerId) {
       nodeDragRef.current = null;
       if (drag.moved) {
-        const moved = selectedIdsRef.current.includes(drag.nodeId)
-          ? new Set(selectedIdsRef.current)
-          : new Set([drag.nodeId]);
-        // Snap to whole pixels, since the format stores integers anyway.
-        setDoc((d) => ({
-          ...d,
-          nodes: d.nodes.map((n) =>
-            moved.has(n.id)
-              ? ({ ...n, x: Math.round(n.x), y: Math.round(n.y) } as CanvasNode)
-              : n,
-          ),
-        }));
+        // Positions are already whole numbers — gridSnap rounds either way —
+        // so finishing only has to put the move on the undo stack.
         setDragCommit((t) => t + 1);
       } else if (longPressFiredRef.current) {
         // The long press already changed the selection; the lift is not a tap.
@@ -1006,27 +1109,77 @@ export default function CanvasClient() {
     return true;
   }, []);
 
+  /** Select everything the lasso covers. Returns true if it handled the lift. */
+  const finishLasso = useCallback(
+    (pointerId: number): boolean => {
+      const lasso = lassoRef.current;
+      if (!lasso || lasso.pointerId !== pointerId) return false;
+      lassoRef.current = null;
+      clearInk();
+
+      const rect = {
+        x: Math.min(lasso.start.x, lasso.current.x),
+        y: Math.min(lasso.start.y, lasso.current.y),
+        width: Math.abs(lasso.current.x - lasso.start.x),
+        height: Math.abs(lasso.current.y - lasso.start.y),
+      };
+      // A stray dab is not a lasso; treat it as clearing the selection.
+      if (rect.width < 6 && rect.height < 6) {
+        if (!lasso.additive) setSelectedIds([]);
+        return true;
+      }
+
+      // Touching counts, not enclosing: on a crowded map, demanding full
+      // containment means missing the card you were obviously reaching for.
+      const caught = docRef.current.nodes.filter((n) => rectsOverlap(rect, nodeRect(n))).map((n) => n.id);
+      setSelectedIds((ids) =>
+        lasso.additive ? [...new Set([...ids, ...caught])] : caught,
+      );
+      if (caught.length) showToast(`${caught.length} selected.`);
+      return true;
+    },
+    [clearInk, showToast],
+  );
+
+  /** Finish a card drag started by any pointer. Returns true if it handled it. */
+  const finishNodeDrag = useCallback((pointerId: number): boolean => {
+    const drag = nodeDragRef.current;
+    if (!drag || drag.pointerId !== pointerId) return false;
+    nodeDragRef.current = null;
+    if (drag.moved) setDragCommit((t) => t + 1);
+    return drag.moved;
+  }, []);
+
   const onPointerUp = useCallback(
     (e: React.PointerEvent<HTMLDivElement>) => {
       if (finishResize(e.pointerId)) return;
+      if (finishLasso(e.pointerId)) return;
+      if (e.pointerType !== "touch" && finishNodeDrag(e.pointerId)) return;
       if (e.pointerType === "touch") {
         endTouch(e.pointerId);
         return;
       }
       const stroke = strokeRef.current;
-      if (!stroke || stroke.pointerId !== e.pointerId) return;
+      if (!stroke || stroke.pointerId !== e.pointerId) {
+        // In select mode there is no stroke to judge; a bare lift is a click
+        // on empty space, which clears the selection.
+        if (penModeRef.current === "select" && !e.shiftKey) setSelectedIds([]);
+        return;
+      }
 
       penUntilRef.current = performance.now() + PEN_PRIORITY_MS;
       strokeRef.current = null;
       clearInk();
       applyGesture(stroke.points);
     },
-    [applyGesture, clearInk, endTouch, finishResize],
+    [applyGesture, clearInk, endTouch, finishLasso, finishNodeDrag, finishResize],
   );
 
   const onPointerCancel = useCallback(
     (e: React.PointerEvent<HTMLDivElement>) => {
       if (finishResize(e.pointerId)) return;
+      if (finishLasso(e.pointerId)) return;
+      if (e.pointerType !== "touch" && finishNodeDrag(e.pointerId)) return;
       if (e.pointerType === "touch") {
         endTouch(e.pointerId);
         return;
@@ -1034,7 +1187,7 @@ export default function CanvasClient() {
       strokeRef.current = null;
       clearInk();
     },
-    [clearInk, endTouch, finishResize],
+    [clearInk, endTouch, finishLasso, finishNodeDrag, finishResize],
   );
 
   const onWheel = useCallback((e: React.WheelEvent<HTMLDivElement>) => {
@@ -1136,13 +1289,29 @@ export default function CanvasClient() {
       const centre =
         chosen.reduce((sum, n) => sum + n[axis] + n[size] / 2, 0) / chosen.length;
 
+      // A column of differently-sized cards still looks ragged with matching
+      // centres, because the edges do not line up. Give them all the largest
+      // measurement on that axis so the edges agree. Largest, never smallest,
+      // so nothing gets narrowed into clipping its own text.
+      const uniform = Math.max(...chosen.map((n) => n[size]));
+
       applyDoc({
         ...current,
         nodes: current.nodes.map((n) =>
-          ids.has(n.id) ? ({ ...n, [axis]: Math.round(centre - n[size] / 2) } as CanvasNode) : n,
+          ids.has(n.id)
+            ? ({
+                ...n,
+                [size]: uniform,
+                [axis]: Math.round(centre - uniform / 2),
+              } as CanvasNode)
+            : n,
         ),
       });
-      showToast(axis === "x" ? "Aligned into a column." : "Aligned into a row.");
+      showToast(
+        axis === "x"
+          ? "Aligned into a column, edges matched."
+          : "Aligned into a row, edges matched.",
+      );
     },
     [applyDoc, selectedIds, showToast],
   );
@@ -1184,6 +1353,30 @@ export default function CanvasClient() {
 
   const selectAll = useCallback(() => {
     setSelectedIds(docRef.current.nodes.map((n) => n.id));
+  }, []);
+
+  const toggleSnap = useCallback(() => {
+    setSnapToGrid((on) => {
+      const next = !on;
+      try {
+        localStorage.setItem("mindmap_snap", next ? "1" : "0");
+      } catch {
+        // Losing the preference is harmless.
+      }
+      return next;
+    });
+  }, []);
+
+  const togglePenMode = useCallback(() => {
+    setPenMode((mode) => {
+      const next = mode === "draw" ? "select" : "draw";
+      try {
+        localStorage.setItem("mindmap_pen_mode", next);
+      } catch {
+        // Losing the preference is harmless.
+      }
+      return next;
+    });
   }, []);
 
   const zoomToFit = useCallback(() => {
@@ -1678,6 +1871,24 @@ export default function CanvasClient() {
           Redo
         </button>
         <span className={styles.spacer} />
+        <button
+          className={`${styles.button} ${penMode === "select" ? styles.buttonOn : ""}`}
+          onClick={togglePenMode}
+          title={
+            penMode === "draw"
+              ? "Pen draws. Switch it to moving cards and lassoing."
+              : "Pen moves and lassoes. Switch it back to drawing."
+          }
+        >
+          {penMode === "draw" ? "✎ Draw" : "⬚ Select"}
+        </button>
+        <button
+          className={`${styles.button} ${snapToGrid ? styles.buttonOn : ""}`}
+          onClick={toggleSnap}
+          title="Snap cards to the grid while moving and resizing"
+        >
+          Snap
+        </button>
         <button className={styles.button} onClick={zoomToFit}>
           Fit
         </button>

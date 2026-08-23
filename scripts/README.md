@@ -19,6 +19,7 @@ node scripts/verify-paste.mjs             # pasting and copying map JSON
 node scripts/verify-doubletap.mjs         # double-tap to zoom
 node scripts/verify-multitouch.mjs        # two/three-finger undo and redo
 node scripts/verify-multiselect.mjs       # multi-select, align, bulk move
+node scripts/verify-arrange.mjs           # snap, edge alignment, pen select mode
 node scripts/verify-cloud.mjs             # cloud library (skips if unconfigured)
 node scripts/verify-roundtrip.mjs         # .canvas fidelity
 ```
@@ -106,6 +107,11 @@ needs `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` and **skips cleanly** when
 they are absent, because a deployment without cloud sync is a working app
 rather than a broken one. It writes and then removes its own map, and touches
 nothing else.
+
+`verify-arrange.mjs` covers snap-to-grid, edge-matching alignment, and the
+pen's select mode. Its most important check is the last one: switching back to
+Draw has to leave the recognizer exactly as it was, because a mode that leaks
+is worse than no mode.
 
 The lesson generalizes three times over: when a check drives the app through a
 different input path than the user does, or feeds it idealized input the user

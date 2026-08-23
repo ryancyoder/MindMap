@@ -56,6 +56,14 @@ undo; three redo. The
 grip on a selected card's corner resizes it — the only control where pen and
 finger do the same thing, so it is checked before either input branch.
 
+**Pen mode is a deliberate exception.** The toggle in the bottom bar switches
+the pen between drawing and pointing: in select mode it drags cards and lassoes
+empty space instead of making them. Draw is the default and must stay so — a
+tool switch is exactly the tax the gesture model exists to avoid — but
+arranging a finished map is a different job from thinking one up, and lassoing
+beats long-pressing twelve cards. Anything added to select mode must leave
+draw mode untouched.
+
 **Pen draws, finger manipulates.** That split is what makes palm rejection
 free: a resting palm is a touch pointer, and touch never draws. `pointerType`
 routes every event, and a pen-priority window (`PEN_PRIORITY_MS`) locks touch
@@ -114,10 +122,17 @@ Dragging a card that is *in* the selection moves the whole selection; dragging
 one that is not moves only it. The resize grip only appears when exactly one
 card is selected, since resizing several at once has no obvious meaning.
 
-Alignment works on **centres, not edges**. Cards differ in width, and a column
-with matching centres reads as straight where matching left edges does not.
-Align aims at the centre of the selection so the group stays put rather than
-sliding toward whichever card happens to be first.
+Alignment matches **both centres and size**: cards in a column all take the
+widest width in the selection, so their left and right edges line up too.
+Widest, never narrowest — narrowing a card would clip text that is already
+written. Align aims at the centre of the selection so the group stays put
+rather than sliding toward whichever card happens to be first.
+
+**Snap-to-grid** (`GRID`, mirroring the dot grid in the stylesheet) applies
+while dragging and resizing, and to newly drawn cards. Drags therefore record
+each card's origin and position **absolutely** from the pointer's total
+displacement — accumulating per-frame deltas makes a snapped card creep,
+because each frame re-snaps an already-snapped value.
 
 ## Multi-finger gestures
 

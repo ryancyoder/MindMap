@@ -186,15 +186,42 @@
   gap: 6px;
 }
 
-.bottomBar {
+/* One dock holding both bottom bars.
+   They used to be positioned independently, which meant adding a button to one
+   could push it underneath the other — and did, in portrait, where the screen
+   is narrower than the two bars together. As flex children of a wrapping row
+   they stack instead of colliding, at any width. */
+.bottomDock {
+  position: absolute;
+  z-index: 10;
   bottom: max(12px, env(safe-area-inset-bottom));
   left: max(12px, env(safe-area-inset-left));
-  min-width: 260px;
+  right: max(12px, env(safe-area-inset-right));
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: flex-end;
+  justify-content: space-between;
+  /* The dock is a layout frame, not a surface: gaps between the bars stay
+     drawable. Each bar takes its own pointer events back. */
+  pointer-events: none;
+}
+
+.bottomDock > * {
+  pointer-events: auto;
+}
+
+.bottomBar {
+  position: static;
+  min-width: 0;
 }
 
 .inspector {
-  bottom: max(12px, env(safe-area-inset-bottom));
-  right: max(12px, env(safe-area-inset-right));
+  position: static;
+  /* Colours plus four commands is a lot on a narrow screen; wrapping inside
+     the bar beats overflowing off the edge of it. */
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .spacer {
@@ -614,16 +641,14 @@
 
 /* ─── TOASTS ───────────────────────────────────────────────────────────── */
 
+/* Toasts ride in the dock as a full-width row above the bars, so they clear
+   them however the bars happen to wrap. */
 .toasts {
-  position: absolute;
-  bottom: max(80px, calc(env(safe-area-inset-bottom) + 76px));
-  left: 50%;
-  z-index: 20;
+  flex-basis: 100%;
   display: flex;
   flex-direction: column;
   gap: 8px;
   align-items: center;
-  transform: translateX(-50%);
   pointer-events: none;
 }
 

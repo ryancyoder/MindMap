@@ -147,6 +147,22 @@ under a per-frame delta.
 `handleMultiTap` fires above where `doUndo`/`doRedo` are declared, so it
 reaches them through refs rather than reordering the file around one gesture.
 
+## Chrome layout
+
+Both bottom bars live in **one wrapping dock** (`.bottomDock`), not as two
+independently positioned elements. They were independent once, and adding two
+buttons to the left bar pushed it underneath the right one in portrait, hiding
+the zoom control on every narrow screen. As flex children of a wrapping row
+they stack instead of colliding, at any width.
+
+The dock itself is `pointer-events: none` with its children `auto`, so the gaps
+between the bars stay drawable rather than becoming a dead strip across the
+bottom of the canvas.
+
+**Add a control to either bar and run `verify-layout.mjs`.** It checks four
+device sizes; the rest of the suite runs at one wide desktop viewport where
+this class of bug cannot appear.
+
 ## Card sizing
 
 Cards grow to fit their text when an edit is committed, and never shrink — so a
@@ -212,11 +228,14 @@ There is no unit test framework. Behavior is verified by driving the real app
 in a browser — see `scripts/README.md`. Run those after any change to the
 recognizer or the format module.
 
-Three bugs shipped past a fully green suite, all because the checks fed the app
-something a hand never produces: trusted mouse events instead of pen events,
-geometrically perfect circles instead of shaky ones, and 1px-wide touch
-contacts instead of real fingertips. When adding a check, ask what it feeds the
-app and whether a hand could produce it.
+Four bugs shipped past a fully green suite. Three fed the app something a hand
+never produces — trusted mouse events instead of pen events, geometrically
+perfect circles instead of shaky ones, 1px-wide touch contacts instead of real
+fingertips. The fourth rendered it at a size nobody holds: every suite ran at
+one wide desktop viewport, so two bars colliding in portrait went unseen.
+
+When adding a check, ask what it feeds the app, whether a hand could produce
+it, and what shape of screen it is looking at.
 
 ## Cloud library (v2)
 

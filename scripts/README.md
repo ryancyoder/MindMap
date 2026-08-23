@@ -20,6 +20,7 @@ node scripts/verify-doubletap.mjs         # double-tap to zoom
 node scripts/verify-multitouch.mjs        # two/three-finger undo and redo
 node scripts/verify-multiselect.mjs       # multi-select, align, bulk move
 node scripts/verify-arrange.mjs           # snap, edge alignment, pen select mode
+node scripts/verify-layout.mjs            # chrome layout at real device sizes
 node scripts/verify-cloud.mjs             # cloud library (skips if unconfigured)
 node scripts/verify-roundtrip.mjs         # .canvas fidelity
 ```
@@ -113,9 +114,16 @@ pen's select mode. Its most important check is the last one: switching back to
 Draw has to leave the recognizer exactly as it was, because a mode that leaks
 is worse than no mode.
 
-The lesson generalizes three times over: when a check drives the app through a
-different input path than the user does, or feeds it idealized input the user
-cannot produce, a green suite says nothing about the user's experience.
+`verify-layout.mjs` checks the chrome at four device sizes. It exists because
+of a regression every other suite missed: two extra buttons pushed the bottom
+bar underneath the selection bar in portrait, hiding the zoom control. Nothing
+failed, because every other suite runs at one wide desktop viewport and the
+collision cannot happen there. **Add anything to a bar and run this.**
+
+The lesson generalizes four times over: when a check drives the app through a
+different input path than the user does, feeds it idealized input the user
+cannot produce, or renders it at a size the user never holds, a green suite
+says nothing about the user's experience.
 
 None of these cover palm rejection or pressure, which need real touch and pen
 hardware — test those on an iPad by hand.

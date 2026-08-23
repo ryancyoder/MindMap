@@ -1863,98 +1863,111 @@ export default function CanvasClient() {
         />
       </header>
 
-      <div className={`${styles.chrome} ${styles.bottomBar}`}>
-        <button className={styles.button} onClick={doUndo} disabled={!canUndo(history)}>
-          Undo
-        </button>
-        <button className={styles.button} onClick={doRedo} disabled={!canRedo(history)}>
-          Redo
-        </button>
-        <span className={styles.spacer} />
-        <button
-          className={`${styles.button} ${penMode === "select" ? styles.buttonOn : ""}`}
-          onClick={togglePenMode}
-          title={
-            penMode === "draw"
-              ? "Pen draws. Switch it to moving cards and lassoing."
-              : "Pen moves and lassoes. Switch it back to drawing."
-          }
-        >
-          {penMode === "draw" ? "✎ Draw" : "⬚ Select"}
-        </button>
-        <button
-          className={`${styles.button} ${snapToGrid ? styles.buttonOn : ""}`}
-          onClick={toggleSnap}
-          title="Snap cards to the grid while moving and resizing"
-        >
-          Snap
-        </button>
-        <button className={styles.button} onClick={zoomToFit}>
-          Fit
-        </button>
-        <span className={styles.zoomLabel}>{Math.round(transform.k * 100)}%</span>
-      </div>
-
-      {selectedNodes.length > 0 ? (
-        <div className={`${styles.chrome} ${styles.inspector}`}>
-          <div className={styles.swatches}>
-            <button
-              className={`${styles.swatch} ${styles.swatchNone}`}
-              onClick={() => setSelectedColor(null)}
-              aria-label="Default color"
-            />
-            {PRESET_COLOR_IDS.map((id) => (
-              <button
-                key={id}
-                className={styles.swatch}
-                style={{ background: resolveColor(id) ?? undefined }}
-                onClick={() => setSelectedColor(id)}
-                aria-label={`Color ${id}`}
-              />
+      <div className={styles.bottomDock}>
+        {toasts.length > 0 ? (
+          <div className={styles.toasts}>
+            {toasts.map((t) => (
+              <div key={t.id} className={styles.toast}>
+                {t.message}
+              </div>
             ))}
           </div>
-          {selectedNodes.length === 1 ? (
-            <button
-              className={styles.button}
-              onClick={() => {
-                const node = docRef.current.nodes.find((n) => n.id === selectedIds[0]);
-                if (node) beginEditing(node);
-              }}
-            >
-              Edit
-            </button>
-          ) : (
-            <>
-              <span className={styles.selectionCount}>{selectedNodes.length} selected</span>
-              <button
-                className={styles.button}
-                onClick={() => alignSelected("x")}
-                title="Line them up in a column"
-              >
-                Column
-              </button>
-              <button
-                className={styles.button}
-                onClick={() => alignSelected("y")}
-                title="Line them up in a row"
-              >
-                Row
-              </button>
-              <button
-                className={styles.button}
-                onClick={distributeSelected}
-                disabled={selectedNodes.length < 3}
-                title="Even out the gaps"
-              >
-                Space
-              </button>
-            </>
-          )}
-          <button className={`${styles.button} ${styles.danger}`} onClick={deleteSelected}>
-            Delete
+        ) : null}
+
+        <div className={`${styles.chrome} ${styles.bottomBar}`}>
+          <button className={styles.button} onClick={doUndo} disabled={!canUndo(history)}>
+            Undo
           </button>
+          <button className={styles.button} onClick={doRedo} disabled={!canRedo(history)}>
+            Redo
+          </button>
+          <span className={styles.spacer} />
+          <button
+            className={`${styles.button} ${penMode === "select" ? styles.buttonOn : ""}`}
+            onClick={togglePenMode}
+            title={
+              penMode === "draw"
+                ? "Pen draws. Switch it to moving cards and lassoing."
+                : "Pen moves and lassoes. Switch it back to drawing."
+            }
+          >
+            {penMode === "draw" ? "✎ Draw" : "⬚ Select"}
+          </button>
+          <button
+            className={`${styles.button} ${snapToGrid ? styles.buttonOn : ""}`}
+            onClick={toggleSnap}
+            title="Snap cards to the grid while moving and resizing"
+          >
+            Snap
+          </button>
+          <button className={styles.button} onClick={zoomToFit}>
+            Fit
+          </button>
+          <span className={styles.zoomLabel}>{Math.round(transform.k * 100)}%</span>
         </div>
-      ) : null}
+
+        {selectedNodes.length > 0 ? (
+          <div className={`${styles.chrome} ${styles.inspector}`}>
+            <div className={styles.swatches}>
+              <button
+                className={`${styles.swatch} ${styles.swatchNone}`}
+                onClick={() => setSelectedColor(null)}
+                aria-label="Default color"
+              />
+              {PRESET_COLOR_IDS.map((id) => (
+                <button
+                  key={id}
+                  className={styles.swatch}
+                  style={{ background: resolveColor(id) ?? undefined }}
+                  onClick={() => setSelectedColor(id)}
+                  aria-label={`Color ${id}`}
+                />
+              ))}
+            </div>
+            {selectedNodes.length === 1 ? (
+              <button
+                className={styles.button}
+                onClick={() => {
+                  const node = docRef.current.nodes.find((n) => n.id === selectedIds[0]);
+                  if (node) beginEditing(node);
+                }}
+              >
+                Edit
+              </button>
+            ) : (
+              <>
+                <span className={styles.selectionCount}>{selectedNodes.length} selected</span>
+                <button
+                  className={styles.button}
+                  onClick={() => alignSelected("x")}
+                  title="Line them up in a column"
+                >
+                  Column
+                </button>
+                <button
+                  className={styles.button}
+                  onClick={() => alignSelected("y")}
+                  title="Line them up in a row"
+                >
+                  Row
+                </button>
+                <button
+                  className={styles.button}
+                  onClick={distributeSelected}
+                  disabled={selectedNodes.length < 3}
+                  title="Even out the gaps"
+                >
+                  Space
+                </button>
+              </>
+            )}
+            <button className={`${styles.button} ${styles.danger}`} onClick={deleteSelected}>
+              Delete
+            </button>
+          </div>
+        ) : null}
+
+      </div>
 
       {doc.nodes.length === 0 && ready ? (
         <div className={styles.emptyHint}>
@@ -2217,13 +2230,6 @@ export default function CanvasClient() {
         </div>
       ) : null}
 
-      <div className={styles.toasts}>
-        {toasts.map((t) => (
-          <div key={t.id} className={styles.toast}>
-            {t.message}
-          </div>
-        ))}
-      </div>
     </div>
   );
 }

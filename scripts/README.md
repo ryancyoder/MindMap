@@ -22,6 +22,7 @@ node scripts/verify-multiselect.mjs       # multi-select, align, bulk move
 node scripts/verify-arrange.mjs           # snap, edge alignment, pen select mode
 node scripts/verify-layout.mjs            # chrome layout at real device sizes
 node scripts/verify-edges.mjs             # deleting a connection
+node scripts/verify-tilt.mjs              # tilt-to-pan maths and interaction
 node scripts/verify-cloud.mjs             # cloud library (skips if unconfigured)
 node scripts/verify-roundtrip.mjs         # .canvas fidelity
 ```
@@ -127,6 +128,14 @@ its own did nothing, and there was no way to delete a connection at all except
 by deleting one of the cards it joined. Its bowed-connector check is the one
 that matters — hit-testing samples the same curve the renderer draws, and a
 straight-line approximation passes the first check while failing that one.
+
+`verify-tilt.mjs` covers what is testable about tilt panning: the maths, and
+whether the loop stands down while a pointer is busy. The sensor cannot be
+faked convincingly and the iOS permission prompt cannot be driven at all, so
+how it *feels* — the gain and dead zone — has to be judged on the iPad. Its
+landscape checks are the valuable ones: beta and gamma are fixed to the
+hardware rather than the picture, so at 90° they arrive swapped, and getting
+that wrong makes tilting left pan upwards.
 
 The lesson generalizes four times over: when a check drives the app through a
 different input path than the user does, feeds it idealized input the user

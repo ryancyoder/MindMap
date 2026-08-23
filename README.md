@@ -33,7 +33,9 @@ double-tap the empty canvas to come back out.
 **Draw / Select** switches what the pen does. In Select it drags cards and
 lassoes an area to select everything it touches — useful when you are arranging
 a finished map rather than thinking one up. **Snap** locks moving and resizing
-to the grid.
+to the grid. **Tilt** lets you pan by tilting the iPad, so you can move around
+the canvas without putting the pen down — it takes the pose you are already
+holding as level, and stops while you are drawing.
 
 Text goes in with **Scribble**: the card opens a real text field, so you
 handwrite into it with the Pencil and never see a keyboard.

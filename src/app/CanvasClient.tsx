@@ -25,6 +25,7 @@ import {
 } from "@/lib/jsoncanvas";
 import { nodeAt, nodeRect, recognize, RECOGNIZER } from "@/lib/recognize";
 import { edgeCurve, rectsOverlap, snap } from "@/lib/geometry";
+import { requestTiltPermission, tiltPan, tiltSupported, type TiltReading } from "@/lib/tilt";
 import {
   canRedo,
   canUndo,
@@ -143,6 +144,7 @@ export default function CanvasClient() {
   const [busyCloudId, setBusyCloudId] = useState<string | null>(null);
   const [snapToGrid, setSnapToGrid] = useState(false);
   const [penMode, setPenMode] = useState<"draw" | "select">("draw");
+  const [tiltOn, setTiltOn] = useState(false);
 
   const surfaceRef = useRef<HTMLDivElement>(null);
   const inkRef = useRef<HTMLCanvasElement>(null);
@@ -177,6 +179,10 @@ export default function CanvasClient() {
   /** The view to return to when double-tapping away from a card. */
   const zoomBackRef = useRef<Transform | null>(null);
   const animRef = useRef<number | null>(null);
+  /** The pose the iPad was held in when tilt was switched on. */
+  const tiltNeutralRef = useRef<TiltReading | null>(null);
+  const tiltReadingRef = useRef<TiltReading>({ beta: 0, gamma: 0 });
+  const tiltFrameRef = useRef<number | null>(null);
   const nodeDragRef = useRef<{
     pointerId: number;
     nodeId: string;
@@ -1350,6 +1356,97 @@ export default function CanvasClient() {
     setSelectedIds(docRef.current.nodes.map((n) => n.id));
   }, []);
 
+  /**
+   * Tilt panning runs its own animation frame loop rather than moving the view
+   * on each sensor reading: readings arrive at whatever rate the hardware
+   * feels like, and panning has to be smooth and frame-rate independent.
+   *
+   * It stands down whenever a pointer is doing something — mid-stroke, mid-drag
+   * or mid-pinch — because a canvas that slides while you are drawing on it
+   * would ruin the stroke you are making.
+   */
+  useEffect(() => {
+    if (!tiltOn) return;
+
+    const onReading = (e: DeviceOrientationEvent) => {
+      if (e.beta === null || e.gamma === null) return;
+      tiltReadingRef.current = { beta: e.beta, gamma: e.gamma };
+      // Calibrate on the pose already being held: an iPad is never flat, and
+      // treating level as neutral would fling the canvas the moment this
+      // switched on.
+      if (!tiltNeutralRef.current) tiltNeutralRef.current = { beta: e.beta, gamma: e.gamma };
+    };
+
+    window.addEventListener("deviceorientation", onReading);
+
+    let last = performance.now();
+    const step = (now: number) => {
+      const dt = Math.min((now - last) / 1000, 0.05);
+      last = now;
+      tiltFrameRef.current = requestAnimationFrame(step);
+
+      const neutral = tiltNeutralRef.current;
+      const busy =
+        strokeRef.current !== null ||
+        nodeDragRef.current !== null ||
+        resizeRef.current !== null ||
+        lassoRef.current !== null ||
+        touchesRef.current.size > 0;
+      if (!neutral || busy) return;
+
+      const angle = typeof screen !== "undefined" ? (screen.orientation?.angle ?? 0) : 0;
+      const { vx, vy } = tiltPan(tiltReadingRef.current, neutral, angle);
+      if (vx === 0 && vy === 0) return;
+
+      // Lean right, see what is to the right: the view moves, so the content
+      // moves the other way.
+      setTransform((t) => ({ ...t, x: t.x - vx * dt, y: t.y - vy * dt }));
+    };
+    tiltFrameRef.current = requestAnimationFrame(step);
+
+    return () => {
+      window.removeEventListener("deviceorientation", onReading);
+      if (tiltFrameRef.current !== null) cancelAnimationFrame(tiltFrameRef.current);
+      tiltFrameRef.current = null;
+    };
+  }, [tiltOn]);
+
+  const toggleTilt = useCallback(async () => {
+    if (tiltOn) {
+      setTiltOn(false);
+      tiltNeutralRef.current = null;
+      try {
+        localStorage.setItem("mindmap_tilt", "0");
+      } catch {
+        // Losing the preference is harmless.
+      }
+      return;
+    }
+    if (!tiltSupported()) {
+      showToast("This device doesn't report tilt.");
+      return;
+    }
+    // iOS only grants this from a user gesture, which is this click.
+    const verdict = await requestTiltPermission();
+    if (verdict !== "granted") {
+      showToast(
+        verdict === "denied"
+          ? "Motion access was denied. Allow it in Settings › Safari to use tilt."
+          : "This device doesn't report tilt.",
+      );
+      return;
+    }
+    // Recalibrate on the next reading, whatever pose you are holding now.
+    tiltNeutralRef.current = null;
+    setTiltOn(true);
+    try {
+      localStorage.setItem("mindmap_tilt", "1");
+    } catch {
+      // Losing the preference is harmless.
+    }
+    showToast("Tilt to pan. Hold it as you are — that's level now.");
+  }, [showToast, tiltOn]);
+
   const toggleSnap = useCallback(() => {
     setSnapToGrid((on) => {
       const next = !on;
@@ -1894,6 +1991,13 @@ export default function CanvasClient() {
             title="Snap cards to the grid while moving and resizing"
           >
             Snap
+          </button>
+          <button
+            className={`${styles.button} ${tiltOn ? styles.buttonOn : ""}`}
+            onClick={() => void toggleTilt()}
+            title="Tilt the iPad to pan, so you can keep hold of the pen"
+          >
+            Tilt
           </button>
           <button className={styles.button} onClick={zoomToFit}>
             Fit

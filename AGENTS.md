@@ -157,6 +157,31 @@ under a per-frame delta.
 `handleMultiTap` fires above where `doUndo`/`doRedo` are declared, so it
 reaches them through refs rather than reordering the file around one gesture.
 
+## Tilt to pan
+
+Tilting the iPad pans the canvas, for when the hand that would pan is holding
+the pen. Off by default and behind a toggle, because a canvas that drifts
+whenever you shift in your chair is worse than no feature.
+
+Three things it must keep doing:
+
+- **Calibrate on the pose being held.** The first reading after switching on
+  becomes neutral. Nobody holds an iPad flat, so treating level as neutral
+  flings the canvas the moment it turns on.
+- **Stand down while a pointer is busy** — mid-stroke, mid-drag, mid-pinch. A
+  canvas sliding under a stroke ruins the stroke.
+- **Rotate for screen orientation.** `beta`/`gamma` are fixed to the hardware,
+  not the picture. At 90° they arrive swapped; without the rotation in
+  `tiltPan`, tilting left pans upward in landscape.
+
+The loop runs on `requestAnimationFrame`, not on sensor readings, because
+readings arrive at whatever rate the hardware likes and panning has to be
+frame-rate independent.
+
+iOS only grants motion access from a user gesture, which is why
+`requestTiltPermission` is called from the toggle's click handler and nowhere
+else.
+
 ## Chrome layout
 
 Both bottom bars live in **one wrapping dock** (`.bottomDock`), not as two

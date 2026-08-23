@@ -19,6 +19,7 @@ node scripts/verify-paste.mjs             # pasting and copying map JSON
 node scripts/verify-doubletap.mjs         # double-tap to zoom
 node scripts/verify-multitouch.mjs        # two/three-finger undo and redo
 node scripts/verify-multiselect.mjs       # multi-select, align, bulk move
+node scripts/verify-cloud.mjs             # cloud library (skips if unconfigured)
 node scripts/verify-roundtrip.mjs         # .canvas fidelity
 ```
 
@@ -99,6 +100,12 @@ app.
 and long-press — and the commands it unlocks. Alignment is checked on centres
 rather than edges, and each command is checked to be a single undo rather than
 one per card.
+
+`verify-cloud.mjs` drives the cloud library through the app's own routes. It
+needs `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` and **skips cleanly** when
+they are absent, because a deployment without cloud sync is a working app
+rather than a broken one. It writes and then removes its own map, and touches
+nothing else.
 
 The lesson generalizes three times over: when a check drives the app through a
 different input path than the user does, or feeds it idealized input the user

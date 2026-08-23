@@ -45,6 +45,13 @@ import {
   rememberLastOpened,
   type CanvasRecord,
 } from "@/lib/store";
+import {
+  deleteCloudCanvas,
+  listCloudCanvases,
+  pullCanvas,
+  pushCanvas,
+  type CloudCanvas,
+} from "@/lib/cloud";
 import styles from "./canvas.module.css";
 
 type Transform = { x: number; y: number; k: number };
@@ -128,6 +135,10 @@ export default function CanvasClient() {
   const [pasteOpen, setPasteOpen] = useState(false);
   const [pasteText, setPasteText] = useState("");
   const [copied, setCopied] = useState(false);
+  const [cloud, setCloud] = useState<CloudCanvas[]>([]);
+  const [cloudState, setCloudState] = useState<"idle" | "loading" | "off" | "error">("idle");
+  const [cloudError, setCloudError] = useState("");
+  const [busyCloudId, setBusyCloudId] = useState<string | null>(null);
 
   const surfaceRef = useRef<HTMLDivElement>(null);
   const inkRef = useRef<HTMLCanvasElement>(null);
@@ -1236,6 +1247,19 @@ export default function CanvasClient() {
     );
   }, [record, showToast]);
 
+  const refreshCloud = useCallback(async () => {
+    setCloudState("loading");
+    const res = await listCloudCanvases();
+    if (res.ok) {
+      setCloud(res.value);
+      setCloudState("idle");
+      return;
+    }
+    setCloud([]);
+    setCloudState(res.unconfigured ? "off" : "error");
+    setCloudError(res.error);
+  }, []);
+
   const refreshLibrary = useCallback(async () => {
     try {
       setLibrary(await listCanvases());
@@ -1250,7 +1274,8 @@ export default function CanvasClient() {
     setRenamingId(null);
     setConfirmDeleteId(null);
     setLibraryOpen(true);
-  }, [flushSave, refreshLibrary]);
+    void refreshCloud();
+  }, [flushSave, refreshCloud, refreshLibrary]);
 
   /** Make `next` the open canvas. Callers must have flushed the current one. */
   const adopt = useCallback((next: CanvasRecord) => {
@@ -1295,6 +1320,74 @@ export default function CanvasClient() {
       showToast("Map deleted.");
     },
     [adopt, record, showToast, zoomToFit],
+  );
+
+  // ─── CLOUD LIBRARY ────────────────────────────────────────────────────────
+  //
+  // The cloud is a second, shared library rather than a replacement: the device
+  // stays the working store so the app keeps working on a plane, and pushing is
+  // how a map becomes visible to the agents.
+
+  const pushCurrent = useCallback(
+    async (target: CanvasRecord) => {
+      setBusyCloudId(target.id);
+      const res = await pushCanvas(target.doc, target.name, target.cloudId ?? null);
+      setBusyCloudId(null);
+      if (!res.ok) {
+        showToast(res.unconfigured ? "Cloud sync isn't set up." : res.error);
+        return;
+      }
+      // Remember the link so the next push updates rather than duplicates.
+      const linked = { ...target, cloudId: res.value };
+      await putCanvas(linked);
+      if (record?.id === target.id) setRecord(linked);
+      await refreshLibrary();
+      await refreshCloud();
+      showToast(`Pushed “${target.name}” to the cloud.`);
+    },
+    [record, refreshCloud, refreshLibrary, showToast],
+  );
+
+  const openFromCloud = useCallback(
+    async (item: CloudCanvas) => {
+      setBusyCloudId(item.id);
+      const res = await pullCanvas(item.id);
+      setBusyCloudId(null);
+      if (!res.ok) {
+        showToast(res.error);
+        return;
+      }
+      await flushSave();
+
+      // Pulling into the local map already linked to this cloud row updates it
+      // in place; otherwise it arrives as a new local map.
+      const existing = (await listCanvases()).find((c) => c.cloudId === item.id);
+      const next: CanvasRecord = existing
+        ? { ...existing, name: item.name, doc: res.value, updated: new Date().toISOString() }
+        : { ...newRecord(item.name, res.value), cloudId: item.id };
+
+      await putCanvas(next);
+      adopt(next);
+      setLibraryOpen(false);
+      showToast(`Opened “${item.name}” from the cloud.`);
+      requestAnimationFrame(zoomToFit);
+    },
+    [adopt, flushSave, showToast, zoomToFit],
+  );
+
+  const removeFromCloud = useCallback(
+    async (item: CloudCanvas) => {
+      setBusyCloudId(item.id);
+      const res = await deleteCloudCanvas(item.id);
+      setBusyCloudId(null);
+      if (!res.ok) {
+        showToast(res.error);
+        return;
+      }
+      await refreshCloud();
+      showToast("Removed from the cloud. The copy on this device is untouched.");
+    },
+    [refreshCloud, showToast],
   );
 
   const commitRename = useCallback(async () => {
@@ -1818,6 +1911,16 @@ export default function CanvasClient() {
                           Rename
                         </button>
                       )}
+                      <button
+                        className={styles.button}
+                        onClick={() => void pushCurrent(item)}
+                        disabled={busyCloudId === item.id || cloudState === "off"}
+                        title={
+                          item.cloudId ? "Update the cloud copy" : "Copy this map to the cloud"
+                        }
+                      >
+                        {busyCloudId === item.id ? "Pushing…" : item.cloudId ? "Push ↑" : "To cloud"}
+                      </button>
                       {confirmDeleteId === item.id ? (
                         <button
                           className={`${styles.button} ${styles.danger}`}
@@ -1838,6 +1941,61 @@ export default function CanvasClient() {
                 );
               })}
             </ul>
+
+            <div className={styles.cloudSection}>
+              <div className={styles.cloudHeader}>
+                <h3 className={styles.cloudTitle}>In the cloud</h3>
+                <button
+                  className={styles.button}
+                  onClick={() => void refreshCloud()}
+                  disabled={cloudState === "loading"}
+                >
+                  {cloudState === "loading" ? "Checking…" : "Refresh"}
+                </button>
+              </div>
+
+              {cloudState === "off" ? (
+                <p className={styles.cloudNote}>
+                  Not set up on this deployment. Everything still works on this device.
+                </p>
+              ) : cloudState === "error" ? (
+                <p className={styles.cloudError}>{cloudError}</p>
+              ) : cloud.length === 0 ? (
+                <p className={styles.cloudNote}>
+                  Nothing here yet. Push a map up and your agents can read and write it.
+                </p>
+              ) : (
+                <ul className={styles.mapList}>
+                  {cloud.map((item) => (
+                    <li key={item.id} className={styles.mapRow} data-cloud-id={item.id}>
+                      <button
+                        className={styles.mapOpen}
+                        onClick={() => void openFromCloud(item)}
+                        disabled={busyCloudId === item.id}
+                      >
+                        <span className={styles.mapName}>{item.name}</span>
+                        <span className={styles.mapMeta}>
+                          {item.nodes} card{item.nodes === 1 ? "" : "s"} · {item.edges} link
+                          {item.edges === 1 ? "" : "s"} · {relativeTime(item.updated_at)}
+                          {item.updated_by && item.updated_by !== "app"
+                            ? ` · by ${item.updated_by}`
+                            : ""}
+                        </span>
+                      </button>
+                      <div className={styles.mapActions}>
+                        <button
+                          className={`${styles.button} ${styles.danger}`}
+                          onClick={() => void removeFromCloud(item)}
+                          disabled={busyCloudId === item.id}
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
 
             <footer className={styles.sheetFooter}>
               <button className={styles.button} onClick={() => void newCanvas()}>

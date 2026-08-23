@@ -15,6 +15,8 @@ export type CanvasRecord = {
   doc: Canvas;
   created: string;
   updated: string;
+  /** The cloud row this map is linked to, once it has been pushed. */
+  cloudId?: string | null;
 };
 
 let dbPromise: Promise<IDBDatabase> | null = null;

@@ -203,18 +203,59 @@ geometrically perfect circles instead of shaky ones, and 1px-wide touch
 contacts instead of real fingertips. When adding a check, ask what it feeds the
 app and whether a hand could produce it.
 
+## Cloud library (v2)
+
+Maps live in Supabase in `mindmap_canvases` / `mindmap_nodes` / `mindmap_edges`,
+**normalised** rather than as one JSON blob — the whole point is that an agent
+can update a single card without reading and rewriting the document.
+
+Every table carries an `extra` jsonb for attributes this schema does not model,
+because JSON Canvas lets applications add their own keys and dropping them
+would corrupt another tool's data on a round trip. That guarantee already holds
+in `jsoncanvas.ts`; the schema keeps it true through the database.
+
+For agents:
+
+```sql
+select * from mindmap_canvas_list();                  -- every map
+select mindmap_canvas_doc('<uuid>');                  -- one map as .canvas JSON
+select mindmap_save_canvas('<doc>'::jsonb, 'Name', '<uuid or null>', 'agent-name');
+select mindmap_delete_canvas('<uuid>');               -- soft delete
+update mindmap_nodes set text = '...' where canvas_id = '<uuid>' and id = '<node id>';
+```
+
+`mindmap_save_canvas` is a **whole-document replace** — it deletes and reinserts
+the map's rows, so it will clobber a concurrent row-level edit. Surgical
+changes should UPDATE the row; that is what the normalised shape is for.
+Malformed cards and dangling edges are skipped rather than failing the save,
+matching how the parser treats a malformed file.
+
+Editing a single card bumps its canvas's `updated_at` via trigger, so polling
+one column is enough to know whether anything changed.
+
+RLS is enabled with **no policies**, matching every other table in that
+project: the service-role key is the only way in, it lives in
+`SUPABASE_SERVICE_ROLE_KEY` on the server, and the browser never holds a
+database credential — `src/lib/supabaseServer.ts` is server-only and its
+variables are deliberately not `NEXT_PUBLIC_`.
+
+Cloud sync is optional throughout. Unset the variables and every route returns
+503, the UI says so, and the app is exactly what it was before.
+
 ## Status
 
 v1 is the drawing surface: local-first, no server, no account. The canvas
 library lives in IndexedDB; `.canvas` files move in and out by file picker and
 download.
 
+v2 is the cloud library above: push a map up from the Maps sheet, open one back
+down, and agents read and write it in between.
+
 Planned, deliberately not built yet:
 
-- **v2** — cloud canvas library in Supabase behind server routes, so agents can
-  read and write maps without a manual export.
 - **v3** — in-app AI operations (expand a node into children, cluster loose
   nodes, critique a map), with the Anthropic key server-side in a route
   handler, never in the browser.
-
-`.env.example` lists the variables those will use. Nothing reads them today.
+- Automatic sync. Today pushing and pulling are explicit, which is honest about
+  conflicts: nothing merges, the newer push wins. Real two-way sync needs a
+  merge story before it is worth building.

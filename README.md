@@ -75,6 +75,20 @@ npm run build
 Behavior is verified by driving the real app in a browser — see
 [`scripts/README.md`](scripts/README.md).
 
+## The cloud library
+
+If the deployment has Supabase configured, the Maps sheet grows an **In the
+cloud** section. Push a map up and it becomes readable and writable by your
+agents; open one back down to keep working on it here. The listing shows who
+touched each map last, so an agent's edits are visible as theirs.
+
+Nothing syncs automatically — pushing and pulling are things you do — which
+keeps the conflict story honest: the newer push wins, and nothing merges behind
+your back.
+
+Without Supabase configured the app is unchanged: everything lives on the
+device and the cloud section says so.
+
 ## Status
 
 v1 is the drawing surface, and it runs entirely on the device: no server, no

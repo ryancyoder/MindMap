@@ -443,6 +443,47 @@
   font-size: 14px;
 }
 
+.cloudSection {
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--border);
+  /* The device list scrolls; this stays a bounded footer section so the two
+     libraries never fight for the same space. */
+  max-height: 42%;
+  overflow-y: auto;
+}
+
+.cloudHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px 4px;
+}
+
+.cloudTitle {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.cloudNote,
+.cloudError {
+  margin: 0;
+  padding: 4px 14px 14px;
+  font-size: 13px;
+}
+
+.cloudNote {
+  color: var(--text-muted);
+}
+
+.cloudError {
+  color: var(--danger);
+}
+
 .renameInput {
   flex: 1;
   min-width: 0;

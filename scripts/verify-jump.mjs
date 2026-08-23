@@ -169,6 +169,93 @@ check("and still find the map", (await rows())[0]?.label, "Quarterly planning");
 await page.keyboard.press("Escape");
 await page.waitForTimeout(200);
 
+// ── searching every map ────────────────────────────────────────────────────
+// Off, cards come only from the map you are on. On, from all of them — and
+// jumping to one has to land you in the right map with the card selected.
+
+await page.keyboard.press("Control+k");
+await page.waitForTimeout(300);
+check("the scope toggle starts off", await page.getByRole("switch").getAttribute("aria-checked"), "false");
+
+await page.keyboard.type("palm");
+await page.waitForTimeout(300);
+check(
+  "a card in another map is not found while scoped to this one",
+  (await rows()).some((r) => r.kind === "card" && r.label === "Palm rejection"),
+  false,
+);
+
+await page.getByRole("switch").click();
+await page.waitForTimeout(350);
+check("the toggle turns on", await page.getByRole("switch").getAttribute("aria-checked"), "true");
+
+const everywhere = await rows();
+const foreign = everywhere.find((r) => r.kind === "card" && r.label === "Palm rejection");
+check("now the card in another map is found", Boolean(foreign), true);
+
+check(
+  "and the result says which map it is in",
+  await page.evaluate(() => {
+    const el = [...document.querySelectorAll("[data-jump-kind]")].find(
+      (n) => n.querySelector('[class*="jumpLabel"]').textContent === "Palm rejection",
+    );
+    return el.querySelector('[class*="jumpMeta"]').textContent;
+  }),
+  "in Pencil gestures",
+);
+
+// Jump to it: the map has to change and the card has to be selected.
+await page.evaluate(() => {
+  const el = [...document.querySelectorAll("[data-jump-kind]")].find(
+    (n) => n.querySelector('[class*="jumpLabel"]').textContent === "Palm rejection",
+  );
+  el.click();
+});
+await page.waitForTimeout(1100);
+check("jumping across maps opens the other map", await mapName(), "Pencil gestures");
+check(
+  "with the card selected",
+  await page.evaluate(() => {
+    const el = document.querySelector('[class*="nodeSelected"]');
+    return el ? el.innerText.trim() : "";
+  }),
+  "Palm rejection",
+);
+check("and the palette closed", await openPalette(), 0);
+
+// Cards in the map you are on still say so, not the map's name.
+await page.keyboard.press("Control+k");
+await page.waitForTimeout(300);
+await page.keyboard.type("recognizer");
+await page.waitForTimeout(300);
+check(
+  "a card in the open map is still labelled as here",
+  await page.evaluate(() => {
+    const el = [...document.querySelectorAll("[data-jump-kind]")].find(
+      (n) => n.querySelector('[class*="jumpLabel"]').textContent === "Recognizer thresholds",
+    );
+    return el.querySelector('[class*="jumpMeta"]').textContent;
+  }),
+  "in this map",
+);
+await page.keyboard.press("Escape");
+await page.waitForTimeout(200);
+
+// The choice is remembered.
+await page.reload({ waitUntil: "networkidle" });
+await page.waitForTimeout(600);
+await page.keyboard.press("Control+k");
+await page.waitForTimeout(350);
+check(
+  "the scope choice survives a reload",
+  await page.getByRole("switch").getAttribute("aria-checked"),
+  "true",
+);
+await page.getByRole("switch").click();
+await page.waitForTimeout(250);
+await page.keyboard.press("Escape");
+await page.waitForTimeout(200);
+
 // ── the touch way in ───────────────────────────────────────────────────────
 
 await page.getByRole("button", { name: "Maps" }).click();

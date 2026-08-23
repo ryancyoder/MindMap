@@ -169,6 +169,8 @@ export default function CanvasClient() {
   const [jumpOpen, setJumpOpen] = useState(false);
   const [jumpQuery, setJumpQuery] = useState("");
   const [jumpIndex, setJumpIndex] = useState(0);
+  /** Search cards in every map, not just the one open. */
+  const [jumpEverywhere, setJumpEverywhere] = useState(false);
 
   const surfaceRef = useRef<HTMLDivElement>(null);
   const inkRef = useRef<HTMLCanvasElement>(null);
@@ -292,6 +294,7 @@ export default function CanvasClient() {
       try {
         setSnapToGrid(localStorage.getItem("mindmap_snap") === "1");
         setPenMode(localStorage.getItem("mindmap_pen_mode") === "select" ? "select" : "draw");
+        setJumpEverywhere(localStorage.getItem("mindmap_jump_everywhere") === "1");
       } catch {
         // Private browsing can refuse reads; the defaults are fine.
       }
@@ -1913,9 +1916,24 @@ export default function CanvasClient() {
     setJumpQuery("");
   }, []);
 
+  const toggleJumpEverywhere = useCallback(() => {
+    setJumpEverywhere((on) => {
+      const next = !on;
+      try {
+        localStorage.setItem("mindmap_jump_everywhere", next ? "1" : "0");
+      } catch {
+        // Losing the preference is harmless.
+      }
+      return next;
+    });
+    setJumpIndex(0);
+    // Hand focus back to the query, or the next keystroke goes nowhere.
+    requestAnimationFrame(() => jumpInputRef.current?.focus());
+  }, []);
+
   type JumpTarget =
     | { kind: "map"; id: string; name: string; cards: number; current: boolean }
-    | { kind: "card"; id: string; text: string };
+    | { kind: "card"; id: string; text: string; mapId: string | null; mapName: string };
 
   const jumpTargets = useMemo<JumpTarget[]>(() => {
     if (!jumpOpen) return [];
@@ -1928,15 +1946,33 @@ export default function CanvasClient() {
       current: item.id === record?.id,
     }));
 
-    const cards: JumpTarget[] = doc.nodes
-      .map((n) => ({ kind: "card" as const, id: n.id, text: nodeDisplayText(n).trim() }))
-      .filter((c) => c.text.length > 0);
+    // Every map's document is already in memory once the library has loaded, so
+    // searching all of them costs no more than searching one.
+    const sources = jumpEverywhere
+      ? library.map((item) => ({
+          mapId: item.id === record?.id ? null : item.id,
+          mapName: item.name,
+          nodes: item.doc.nodes,
+        }))
+      : [{ mapId: null, mapName: record?.name ?? "", nodes: doc.nodes }];
+
+    const cards: JumpTarget[] = sources.flatMap((source) =>
+      source.nodes
+        .map((n) => ({
+          kind: "card" as const,
+          id: n.id,
+          text: nodeDisplayText(n).trim(),
+          mapId: source.mapId,
+          mapName: source.mapName,
+        }))
+        .filter((c) => c.text.length > 0),
+    );
 
     return [
       ...rank(jumpQuery, maps, (m) => (m.kind === "map" ? m.name : ""), 6),
-      ...rank(jumpQuery, cards, (c) => (c.kind === "card" ? c.text : ""), 8),
+      ...rank(jumpQuery, cards, (c) => (c.kind === "card" ? c.text : ""), jumpEverywhere ? 12 : 8),
     ];
-  }, [doc.nodes, jumpOpen, jumpQuery, library, record]);
+  }, [doc.nodes, jumpEverywhere, jumpOpen, jumpQuery, library, record]);
 
   const activateJump = useCallback(
     async (target: JumpTarget | undefined) => {
@@ -1948,14 +1984,51 @@ export default function CanvasClient() {
         setTrail([]);
         return;
       }
-      const node = docRef.current.nodes.find((n) => n.id === target.id);
       closeJump();
-      if (!node) return;
+
+      // A card in the map already open: select and glide to it.
+      if (!target.mapId) {
+        const node = docRef.current.nodes.find((n) => n.id === target.id);
+        if (!node) return;
+        setSelectedIds([node.id]);
+        const view = transformForCard(node);
+        if (view) animateTransform(view);
+        return;
+      }
+
+      // A card somewhere else: switch first, then land on it. The view is set
+      // outright rather than animated — easing from the previous map's
+      // scroll position would read as drift, not motion.
+      await flushSave();
+      const holding = await getCanvas(target.mapId);
+      if (!holding) {
+        showToast("That map isn't in this library any more.");
+        return;
+      }
+      const node = holding.doc.nodes.find((n) => n.id === target.id);
+      adopt(holding);
+      setTrail([]);
+      if (!node) {
+        requestAnimationFrame(zoomToFit);
+        return;
+      }
       setSelectedIds([node.id]);
       const view = transformForCard(node);
-      if (view) animateTransform(view);
+      cancelAnim();
+      if (view) setTransform(view);
     },
-    [animateTransform, closeJump, record, switchTo, transformForCard],
+    [
+      adopt,
+      animateTransform,
+      cancelAnim,
+      closeJump,
+      flushSave,
+      record,
+      showToast,
+      switchTo,
+      transformForCard,
+      zoomToFit,
+    ],
   );
 
   // Two things iPadOS makes awkward. The palette is opened with a metaKey
@@ -2076,6 +2149,12 @@ export default function CanvasClient() {
     const onKey = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
       const typing = target?.tagName === "TEXTAREA" || target?.tagName === "INPUT";
+
+      if (jumpOpen && e.key === "Escape") {
+        e.preventDefault();
+        closeJump();
+        return;
+      }
 
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
         e.preventDefault();
@@ -2490,6 +2569,7 @@ export default function CanvasClient() {
             role="dialog"
             aria-label="Jump to"
           >
+            <div className={styles.jumpHeader}>
             <input
               ref={jumpInputRef}
               className={styles.jumpInput}
@@ -2518,6 +2598,19 @@ export default function CanvasClient() {
                 }
               }}
             />
+              <button
+                className={`${styles.jumpScope} ${jumpEverywhere ? styles.jumpScopeOn : ""}`}
+                onClick={toggleJumpEverywhere}
+                role="switch"
+                aria-checked={jumpEverywhere}
+                title="Search cards in every map, not just this one"
+              >
+                <span className={styles.jumpScopeBox} aria-hidden="true">
+                  {jumpEverywhere ? "✓" : ""}
+                </span>
+                All maps
+              </button>
+            </div>
 
             {jumpTargets.length === 0 ? (
               <p className={styles.jumpEmpty}>
@@ -2544,7 +2637,9 @@ export default function CanvasClient() {
                           ? `${target.cards} card${target.cards === 1 ? "" : "s"}${
                               target.current ? " · open" : ""
                             }`
-                          : "in this map"}
+                          : target.mapId
+                            ? `in ${target.mapName}`
+                            : "in this map"}
                       </span>
                     </button>
                   </li>

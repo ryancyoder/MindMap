@@ -223,6 +223,18 @@ workaround is documented in VoiceMap for the same reason.
 ⌘K is handled **before** the "are we typing" guard in the key handler, so it
 works from inside a field and can close the palette it opened.
 
+The **All maps** toggle widens card results from the open map to every map.
+That costs nothing: the library already holds every document in memory by the
+time the palette opens, so it is a different filter over data already loaded,
+not extra reading. Jumping to a card elsewhere switches map first and sets the
+view outright rather than animating — easing from the previous map's scroll
+position reads as drift, not motion.
+
+**Escape and ⌘K are handled globally, not on the palette's input.** Tapping the
+scope toggle moves focus to a button, and Escape bound to the input alone
+stopped closing the palette entirely. The toggle also hands focus back to the
+query, or the next keystroke goes nowhere.
+
 The Maps sheet has a Search button opening the same palette, because ⌘K needs a
 keyboard and this is an iPad app first.
 

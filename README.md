@@ -88,9 +88,13 @@ Behavior is verified by driving the real app in a browser — see
 ## Finding things
 
 **⌘K** jumps to anything: type a few letters of a map's name to switch to it,
-or a few letters of a card in the map you're on to select and zoom to it. It
-matches loosely, so "pgest" finds "Pencil gestures". Without a keyboard, the
-same palette is behind **Search** in the Maps sheet.
+or a few letters of a card to select and zoom to it. It matches loosely, so
+"pgest" finds "Pencil gestures".
+
+Cards come from the map you're on by default. Tick **All maps** and it searches
+every map you have — results say which map each card is in, and picking one
+takes you there with the card selected. Without a keyboard, the same palette is
+behind **Search** in the Maps sheet.
 
 ## When a map gets too big
 

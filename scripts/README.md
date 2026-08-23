@@ -154,6 +154,10 @@ the characters still reach the query. Safari refuses `focus()` for a moment
 after a metaKey combination, so ⌘K can open a palette you cannot type into —
 which looks exactly like the feature not working at all.
 
+It also covers the **All maps** scope toggle, including the bug that found:
+Escape was bound to the palette's input, so tapping the toggle moved focus to a
+button and Escape stopped closing the palette. Escape and ⌘K are global now.
+
 The lesson generalizes four times over: when a check drives the app through a
 different input path than the user does, feeds it idealized input the user
 cannot produce, or renders it at a size the user never holds, a green suite

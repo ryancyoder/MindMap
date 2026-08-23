@@ -427,6 +427,99 @@
   border-bottom-right-radius: 4px;
 }
 
+/* ─── JUMP PALETTE ─────────────────────────────────────────────────────── */
+
+.jump {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0;
+  width: min(560px, calc(100% - 32px));
+  max-height: 70vh;
+  margin-top: -12vh; /* sit above centre, where the eye already is */
+  padding: 0;
+  overflow: hidden;
+}
+
+.jumpInput {
+  padding: 16px 18px;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 18px;
+}
+
+.jumpInput:focus {
+  outline: none;
+}
+
+.jumpList {
+  margin: 0;
+  padding: 6px;
+  overflow-y: auto;
+  list-style: none;
+  -webkit-overflow-scrolling: touch;
+}
+
+.jumpRow {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  width: 100%;
+  padding: 10px 12px;
+  border: none;
+  border-radius: 10px;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.jumpRowActive {
+  background: var(--accent-soft);
+}
+
+.jumpKind {
+  flex-shrink: 0;
+  width: 38px;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.jumpLabel {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 15px;
+  font-weight: 500;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.jumpMeta {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.jumpEmpty {
+  margin: 0;
+  padding: 18px;
+  color: var(--text-muted);
+  font-size: 14px;
+}
+
+.sheetHeaderActions {
+  display: flex;
+  gap: 6px;
+}
+
 /* ─── TILT SETUP ───────────────────────────────────────────────────────── */
 
 .tiltSetup {

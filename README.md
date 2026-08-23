@@ -85,6 +85,13 @@ npm run build
 Behavior is verified by driving the real app in a browser — see
 [`scripts/README.md`](scripts/README.md).
 
+## Finding things
+
+**⌘K** jumps to anything: type a few letters of a map's name to switch to it,
+or a few letters of a card in the map you're on to select and zoom to it. It
+matches loosely, so "pgest" finds "Pencil gestures". Without a keyboard, the
+same palette is behind **Search** in the Maps sheet.
+
 ## When a map gets too big
 
 Select a branch and hit **Fold**: those cards move into a map of their own and

@@ -23,6 +23,7 @@ node scripts/verify-arrange.mjs           # snap, edge alignment, pen select mod
 node scripts/verify-layout.mjs            # chrome layout at real device sizes
 node scripts/verify-edges.mjs             # deleting a connection
 node scripts/verify-nesting.mjs           # folding a branch into its own map
+node scripts/verify-jump.mjs              # the Cmd-K jump palette
 node scripts/verify-tilt.mjs              # tilt-to-pan maths and interaction
 node scripts/verify-cloud.mjs             # cloud library (skips if unconfigured)
 node scripts/verify-roundtrip.mjs         # .canvas fidelity
@@ -146,6 +147,12 @@ restores the **original** wiring rather than reattaching everything to
 whichever card happens to be first. An early version of the suite also had
 parent and sub-map with identical card counts, so "it navigated" passed
 without navigating — the maps are now told apart by their contents.
+
+`verify-jump.mjs` covers the palette. Its most valuable check simulates the
+iPadOS focus quirk: it blurs the input after opening and then types, asserting
+the characters still reach the query. Safari refuses `focus()` for a moment
+after a metaKey combination, so ⌘K can open a palette you cannot type into —
+which looks exactly like the feature not working at all.
 
 The lesson generalizes four times over: when a check drives the app through a
 different input path than the user does, feeds it idealized input the user

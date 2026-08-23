@@ -59,6 +59,7 @@ import {
   type CanvasRecord,
 } from "@/lib/store";
 import { foldSelection, nameForFold, sanitizeName, unfoldNested } from "@/lib/nesting";
+import { rank } from "@/lib/search";
 import {
   deleteCloudCanvas,
   listCloudCanvases,
@@ -165,6 +166,9 @@ export default function CanvasClient() {
   const [trail, setTrail] = useState<{ id: string; name: string }[]>([]);
   /** Card counts for the doorways on screen, so each can show its size. */
   const [nestedSizes, setNestedSizes] = useState<Record<string, number>>({});
+  const [jumpOpen, setJumpOpen] = useState(false);
+  const [jumpQuery, setJumpQuery] = useState("");
+  const [jumpIndex, setJumpIndex] = useState(0);
 
   const surfaceRef = useRef<HTMLDivElement>(null);
   const inkRef = useRef<HTMLCanvasElement>(null);
@@ -1569,6 +1573,7 @@ export default function CanvasClient() {
   // ─── FILE I/O ─────────────────────────────────────────────────────────────
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const jumpInputRef = useRef<HTMLInputElement>(null);
 
   const openFile = useCallback(
     async (file: File) => {
@@ -1891,6 +1896,94 @@ export default function CanvasClient() {
     showToast(`Brought back ${target.doc.nodes.length} card${target.doc.nodes.length === 1 ? "" : "s"}.`);
   }, [applyDoc, selectedIds, showToast]);
 
+  // ─── JUMP PALETTE ─────────────────────────────────────────────────────────
+  //
+  // Maps first, since jumping between them is the point, then cards in the map
+  // currently open — typing a card's name and getting nothing would feel broken.
+
+  const openJump = useCallback(async () => {
+    setJumpQuery("");
+    setJumpIndex(0);
+    setJumpOpen(true);
+    await refreshLibrary();
+  }, [refreshLibrary]);
+
+  const closeJump = useCallback(() => {
+    setJumpOpen(false);
+    setJumpQuery("");
+  }, []);
+
+  type JumpTarget =
+    | { kind: "map"; id: string; name: string; cards: number; current: boolean }
+    | { kind: "card"; id: string; text: string };
+
+  const jumpTargets = useMemo<JumpTarget[]>(() => {
+    if (!jumpOpen) return [];
+
+    const maps: JumpTarget[] = library.map((item) => ({
+      kind: "map" as const,
+      id: item.id,
+      name: item.name,
+      cards: item.doc.nodes.length,
+      current: item.id === record?.id,
+    }));
+
+    const cards: JumpTarget[] = doc.nodes
+      .map((n) => ({ kind: "card" as const, id: n.id, text: nodeDisplayText(n).trim() }))
+      .filter((c) => c.text.length > 0);
+
+    return [
+      ...rank(jumpQuery, maps, (m) => (m.kind === "map" ? m.name : ""), 6),
+      ...rank(jumpQuery, cards, (c) => (c.kind === "card" ? c.text : ""), 8),
+    ];
+  }, [doc.nodes, jumpOpen, jumpQuery, library, record]);
+
+  const activateJump = useCallback(
+    async (target: JumpTarget | undefined) => {
+      if (!target) return;
+      if (target.kind === "map") {
+        closeJump();
+        if (target.id === record?.id) return;
+        await switchTo(target.id);
+        setTrail([]);
+        return;
+      }
+      const node = docRef.current.nodes.find((n) => n.id === target.id);
+      closeJump();
+      if (!node) return;
+      setSelectedIds([node.id]);
+      const view = transformForCard(node);
+      if (view) animateTransform(view);
+    },
+    [animateTransform, closeJump, record, switchTo, transformForCard],
+  );
+
+  // Two things iPadOS makes awkward. The palette is opened with a metaKey
+  // combination, and Safari refuses focus() for a moment afterwards; and in a
+  // standalone PWA that moment can outlast the animation frame. So focus is
+  // attempted, and any keystrokes that miss the input are routed into the query
+  // by hand rather than being swallowed.
+  useEffect(() => {
+    if (!jumpOpen) return;
+    const raf = requestAnimationFrame(() => jumpInputRef.current?.focus());
+
+    const onKeyPress = (e: KeyboardEvent) => {
+      if (document.activeElement === jumpInputRef.current) return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (e.key.length !== 1) return;
+      e.preventDefault();
+      setJumpQuery((q) => q + e.key);
+      setJumpIndex(0);
+      jumpInputRef.current?.focus();
+    };
+    window.addEventListener("keypress", onKeyPress, true);
+
+    return () => {
+      cancelAnimationFrame(raf);
+      window.removeEventListener("keypress", onKeyPress, true);
+    };
+  }, [jumpOpen]);
+
   const commitRename = useCallback(async () => {
     const id = renamingId;
     if (!id) return;
@@ -1984,6 +2077,13 @@ export default function CanvasClient() {
       const target = e.target as HTMLElement | null;
       const typing = target?.tagName === "TEXTAREA" || target?.tagName === "INPUT";
 
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        if (jumpOpen) closeJump();
+        else void openJump();
+        return;
+      }
+
       if (typing) {
         if (e.key === "Escape") {
           e.preventDefault();
@@ -2022,7 +2122,18 @@ export default function CanvasClient() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [commitEditing, deleteSelected, doRedo, doUndo, selectAll, selectedIds, zoomToFit]);
+  }, [
+    closeJump,
+    commitEditing,
+    deleteSelected,
+    doRedo,
+    doUndo,
+    jumpOpen,
+    openJump,
+    selectAll,
+    selectedIds,
+    zoomToFit,
+  ]);
 
   // ─── RENDER ───────────────────────────────────────────────────────────────
 
@@ -2371,6 +2482,79 @@ export default function CanvasClient() {
         </div>
       ) : null}
 
+      {jumpOpen ? (
+        <div className={styles.sheetBackdrop} onClick={closeJump}>
+          <div
+            className={`${styles.chrome} ${styles.jump}`}
+            onClick={(e) => e.stopPropagation()}
+            role="dialog"
+            aria-label="Jump to"
+          >
+            <input
+              ref={jumpInputRef}
+              className={styles.jumpInput}
+              value={jumpQuery}
+              placeholder="Jump to a map or a card…"
+              aria-label="Jump to"
+              autoFocus
+              spellCheck={false}
+              onChange={(e) => {
+                setJumpQuery(e.target.value);
+                setJumpIndex(0);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "ArrowDown") {
+                  e.preventDefault();
+                  setJumpIndex((i) => Math.min(i + 1, Math.max(jumpTargets.length - 1, 0)));
+                } else if (e.key === "ArrowUp") {
+                  e.preventDefault();
+                  setJumpIndex((i) => Math.max(i - 1, 0));
+                } else if (e.key === "Enter") {
+                  e.preventDefault();
+                  void activateJump(jumpTargets[jumpIndex]);
+                } else if (e.key === "Escape") {
+                  e.preventDefault();
+                  closeJump();
+                }
+              }}
+            />
+
+            {jumpTargets.length === 0 ? (
+              <p className={styles.jumpEmpty}>
+                {jumpQuery ? "Nothing matches that." : "Start typing to find a map or a card."}
+              </p>
+            ) : (
+              <ul className={styles.jumpList}>
+                {jumpTargets.map((target, i) => (
+                  <li key={`${target.kind}-${target.id}`}>
+                    <button
+                      className={`${styles.jumpRow} ${i === jumpIndex ? styles.jumpRowActive : ""}`}
+                      data-jump-kind={target.kind}
+                      onMouseEnter={() => setJumpIndex(i)}
+                      onClick={() => void activateJump(target)}
+                    >
+                      <span className={styles.jumpKind}>
+                        {target.kind === "map" ? "Map" : "Card"}
+                      </span>
+                      <span className={styles.jumpLabel}>
+                        {target.kind === "map" ? target.name : target.text}
+                      </span>
+                      <span className={styles.jumpMeta}>
+                        {target.kind === "map"
+                          ? `${target.cards} card${target.cards === 1 ? "" : "s"}${
+                              target.current ? " · open" : ""
+                            }`
+                          : "in this map"}
+                      </span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        </div>
+      ) : null}
+
       {tiltStep !== "none" ? (
         <div className={`${styles.chrome} ${styles.tiltSetup}`} role="dialog" aria-label="Set up tilt">
           <p className={styles.tiltStepLabel}>
@@ -2486,9 +2670,20 @@ export default function CanvasClient() {
           >
             <header className={styles.sheetHeader}>
               <h2 className={styles.sheetTitle}>Your maps</h2>
-              <button className={styles.button} onClick={() => setLibraryOpen(false)}>
-                Done
-              </button>
+              <div className={styles.sheetHeaderActions}>
+                <button
+                  className={styles.button}
+                  onClick={() => {
+                    setLibraryOpen(false);
+                    void openJump();
+                  }}
+                >
+                  Search
+                </button>
+                <button className={styles.button} onClick={() => setLibraryOpen(false)}>
+                  Done
+                </button>
+              </div>
             </header>
 
             <ul className={styles.mapList}>

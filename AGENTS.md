@@ -207,6 +207,25 @@ bottom of the canvas.
 device sizes; the rest of the suite runs at one wide desktop viewport where
 this class of bug cannot appear.
 
+## Jump palette
+
+⌘K opens a palette over everything: maps first, then cards in the map currently
+open. Matching is by **subsequence, not substring** (`src/lib/search.ts`), so
+"pgest" finds "Pencil gestures" — a palette is for typing what you remember.
+Scoring favours consecutive letters and letters at word starts.
+
+**iPadOS refuses `focus()` for a moment after a metaKey combination**, and in a
+standalone PWA that moment can outlast the animation frame — so ⌘K can open a
+palette that swallows everything you type. A capture-phase `keypress` listener
+routes stray characters into the query by hand. Do not remove it; the same
+workaround is documented in VoiceMap for the same reason.
+
+⌘K is handled **before** the "are we typing" guard in the key handler, so it
+works from inside a field and can close the palette it opened.
+
+The Maps sheet has a Search button opening the same palette, because ⌘K needs a
+keyboard and this is an iPad app first.
+
 ## Nested maps
 
 A card can be a doorway into another map. It is a spec `file` node whose `file`

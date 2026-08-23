@@ -22,7 +22,7 @@ There is no tool palette. The shape of the stroke says what you meant:
 | a circle | a new card, ready for text |
 | a line out of a card | a new card there, joined to it |
 | a line between two cards | a link |
-| a scribble over something | it's deleted |
+| a scribble over something | it's deleted — a card, or just the line between two |
 | a quick dab | select it; dab again to type |
 
 **The pen draws. Fingers navigate.** One finger pans, two pinch to zoom, and

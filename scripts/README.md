@@ -21,6 +21,7 @@ node scripts/verify-multitouch.mjs        # two/three-finger undo and redo
 node scripts/verify-multiselect.mjs       # multi-select, align, bulk move
 node scripts/verify-arrange.mjs           # snap, edge alignment, pen select mode
 node scripts/verify-layout.mjs            # chrome layout at real device sizes
+node scripts/verify-edges.mjs             # deleting a connection
 node scripts/verify-cloud.mjs             # cloud library (skips if unconfigured)
 node scripts/verify-roundtrip.mjs         # .canvas fidelity
 ```
@@ -119,6 +120,13 @@ of a regression every other suite missed: two extra buttons pushed the bottom
 bar underneath the selection bar in portrait, hiding the zoom control. Nothing
 failed, because every other suite runs at one wide desktop viewport and the
 collision cannot happen there. **Add anything to a bar and run this.**
+
+`verify-edges.mjs` covers removing a connection. That regressed once: the
+scribble branch required a *card* to be crossed, so scribbling out a link on
+its own did nothing, and there was no way to delete a connection at all except
+by deleting one of the cards it joined. Its bowed-connector check is the one
+that matters — hit-testing samples the same curve the renderer draws, and a
+straight-line approximation passes the first check while failing that one.
 
 The lesson generalizes four times over: when a check drives the app through a
 different input path than the user does, feeds it idealized input the user

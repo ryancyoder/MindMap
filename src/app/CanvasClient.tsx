@@ -2,12 +2,10 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  anchorPoint,
   dist,
   nearestSide,
   pathLength,
   rectCenter,
-  sideNormal,
   type Pt,
   type Rect,
 } from "@/lib/geometry";
@@ -26,7 +24,7 @@ import {
   type TextNode,
 } from "@/lib/jsoncanvas";
 import { nodeAt, nodeRect, recognize, RECOGNIZER } from "@/lib/recognize";
-import { rectsOverlap, snap } from "@/lib/geometry";
+import { edgeCurve, rectsOverlap, snap } from "@/lib/geometry";
 import {
   canRedo,
   canUndo,
@@ -448,7 +446,7 @@ export default function CanvasClient() {
   const applyGesture = useCallback(
     (points: Pt[]) => {
       const current = docRef.current;
-      const gesture = recognize(points, current.nodes);
+      const gesture = recognize(points, current.nodes, current.edges);
 
       switch (gesture.kind) {
         case "tap": {
@@ -513,12 +511,9 @@ export default function CanvasClient() {
 
         case "scribble": {
           const nodeIds = new Set(gesture.nodeIds);
-          const crossedEdges = current.edges.filter((e) =>
-            edgeCrossedByStroke(e, current, gesture.strokePoints),
-          );
-          if (nodeIds.size === 0 && crossedEdges.length === 0) return;
+          const removedEdgeIds = new Set(gesture.edgeIds);
+          if (nodeIds.size === 0 && removedEdgeIds.size === 0) return;
 
-          const removedEdgeIds = new Set(crossedEdges.map((e) => e.id));
           const nodes = current.nodes.filter((n) => !nodeIds.has(n.id));
           const edges = current.edges.filter(
             (e) =>
@@ -2330,14 +2325,7 @@ function buildEdgePaths(doc: Canvas): RenderedEdge[] {
     const fromSide = edge.fromSide ?? nearestSide(fromRect, rectCenter(toRect));
     const toSide = edge.toSide ?? nearestSide(toRect, rectCenter(fromRect));
 
-    const a = anchorPoint(fromRect, fromSide);
-    const b = anchorPoint(toRect, toSide);
-    const na = sideNormal(fromSide);
-    const nb = sideNormal(toSide);
-    const reach = Math.max(40, dist(a, b) * 0.4);
-
-    const c1 = { x: a.x + na.x * reach, y: a.y + na.y * reach };
-    const c2 = { x: b.x + nb.x * reach, y: b.y + nb.y * reach };
+    const { a, b, c1, c2 } = edgeCurve(fromRect, fromSide, toRect, toSide);
 
     out.push({
       id: edge.id,
@@ -2351,28 +2339,4 @@ function buildEdgePaths(doc: Canvas): RenderedEdge[] {
   return out;
 }
 
-/** Did a scribble cross this edge? Sampled along its straight-line span. */
-function edgeCrossedByStroke(edge: CanvasEdge, doc: Canvas, points: Pt[]): boolean {
-  const from = doc.nodes.find((n) => n.id === edge.fromNode);
-  const to = doc.nodes.find((n) => n.id === edge.toNode);
-  if (!from || !to) return false;
 
-  const a = rectCenter(nodeRect(from));
-  const b = rectCenter(nodeRect(to));
-
-  for (const p of points) {
-    const t = closestT(p, a, b);
-    const x = a.x + (b.x - a.x) * t;
-    const y = a.y + (b.y - a.y) * t;
-    if (Math.hypot(p.x - x, p.y - y) < RECOGNIZER.nodeHitPadding * 2) return true;
-  }
-  return false;
-}
-
-function closestT(p: { x: number; y: number }, a: { x: number; y: number }, b: { x: number; y: number }): number {
-  const dx = b.x - a.x;
-  const dy = b.y - a.y;
-  const lenSq = dx * dx + dy * dy;
-  if (lenSq === 0) return 0;
-  return clamp(((p.x - a.x) * dx + (p.y - a.y) * dy) / lenSq, 0, 1);
-}

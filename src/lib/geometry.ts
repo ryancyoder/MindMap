@@ -265,3 +265,47 @@ export function compactness(enclosedArea: number, length: number): number {
   if (length <= 0) return 0;
   return (4 * Math.PI * enclosedArea) / (length * length);
 }
+
+/**
+ * The curve an edge is drawn along, from one node side to another.
+ *
+ * Rendering and hit-testing both go through this, so what you can scribble out
+ * is exactly what you can see. They were separate once — the renderer drew a
+ * bezier while the hit test sampled a straight line between node centres — and
+ * a curve that bulges away from that line is a connector you cannot hit.
+ */
+export function edgeCurve(
+  fromRect: Rect,
+  fromSide: Side,
+  toRect: Rect,
+  toSide: Side,
+): { a: P2; c1: P2; c2: P2; b: P2 } {
+  const a = anchorPoint(fromRect, fromSide);
+  const b = anchorPoint(toRect, toSide);
+  const na = sideNormal(fromSide);
+  const nb = sideNormal(toSide);
+  const reach = Math.max(40, dist(a, b) * 0.4);
+  return {
+    a,
+    b,
+    c1: { x: a.x + na.x * reach, y: a.y + na.y * reach },
+    c2: { x: b.x + nb.x * reach, y: b.y + nb.y * reach },
+  };
+}
+
+/** Points along that curve, for hit-testing it as a polyline. */
+export function sampleCurve(
+  curve: { a: P2; c1: P2; c2: P2; b: P2 },
+  steps = 24,
+): P2[] {
+  const out: P2[] = [];
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    const u = 1 - t;
+    out.push({
+      x: u * u * u * curve.a.x + 3 * u * u * t * curve.c1.x + 3 * u * t * t * curve.c2.x + t * t * t * curve.b.x,
+      y: u * u * u * curve.a.y + 3 * u * u * t * curve.c1.y + 3 * u * t * t * curve.c2.y + t * t * t * curve.b.y,
+    });
+  }
+  return out;
+}

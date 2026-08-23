@@ -45,7 +45,7 @@ selects a mode; the shape of the stroke says what they meant:
 | closed loop | new text node at its bounds, opened for text |
 | line out of a node into space | new node there, joined by an edge |
 | line between two nodes | an edge |
-| scribble over something | delete it and any edges touching it |
+| scribble over something | delete it — a card, or a connection on its own |
 | short dab | select; dab again to edit |
 
 Fingers do the rest: one finger drags a card if it starts on one and pans the
@@ -77,6 +77,16 @@ filter back to all touches.
 
 Recognizer thresholds live in one exported `RECOGNIZER` object in
 `src/lib/recognize.ts`. Tune there, not at call sites.
+
+Connectors are hit-tested against **the same curve the renderer draws**
+(`edgeCurve` / `sampleCurve` in `geometry.ts`), so what can be scribbled out is
+exactly what can be seen. Keep those shared: they were separate once, and a
+straight-line approximation misses any connector that bows away from it.
+
+The scribble branch counts **cards and connectors**. Requiring a card meant
+scribbling out a link on its own did nothing, leaving no way to remove a
+connection without deleting a card — restored, and covered by
+`verify-edges.mjs`.
 
 **Shape is judged by compactness (`4·π·area / length²`), not by counting
 corners.** A hand-drawn circle scores around 0.8; a scribble scores 0.00. An

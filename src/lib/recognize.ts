@@ -33,7 +33,8 @@ import {
   type Rect,
 } from "./geometry";
 import { nearestSide } from "./geometry";
-import type { CanvasNode, Side } from "./jsoncanvas";
+import { edgeCurve, nearestSide as sideFacing, sampleCurve } from "./geometry";
+import type { CanvasEdge, CanvasNode, Side } from "./jsoncanvas";
 
 export const RECOGNIZER = {
   /** Below this path length a stroke is a dab, not a mark. */
@@ -58,6 +59,8 @@ export const RECOGNIZER = {
   loopMinCompactness: 0.15,
   /** A branch flick must travel mostly in one direction, not curl back. */
   branchMinDirectness: 0.55,
+  /** How close a stroke must pass to a connector to count as crossing it. */
+  edgeHitDistance: 14,
   /** New nodes never come out smaller than this. */
   minNodeSize: { width: 120, height: 60 },
   /** Simplification tolerance before shape analysis. */
@@ -66,7 +69,7 @@ export const RECOGNIZER = {
 
 export type Gesture =
   | { kind: "tap"; at: { x: number; y: number }; nodeId: string | null }
-  | { kind: "scribble"; nodeIds: string[]; strokePoints: Pt[] }
+  | { kind: "scribble"; nodeIds: string[]; edgeIds: string[] }
   | { kind: "connect"; fromId: string; toId: string; fromSide: Side; toSide: Side }
   | { kind: "branch"; fromId: string; fromSide: Side; rect: Rect }
   | { kind: "loop"; rect: Rect }
@@ -100,7 +103,39 @@ export function rectFromBounds(b: Rect): Rect {
   };
 }
 
-export function recognize(raw: Pt[], nodes: CanvasNode[]): Gesture {
+/** Every connector the stroke passes close to. */
+function edgesCrossedBy(raw: Pt[], nodes: CanvasNode[], edges: CanvasEdge[]): string[] {
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  const hit: string[] = [];
+
+  for (const edge of edges) {
+    const from = byId.get(edge.fromNode);
+    const to = byId.get(edge.toNode);
+    if (!from || !to) continue;
+
+    const fromRect = nodeRect(from);
+    const toRect = nodeRect(to);
+    const curve = edgeCurve(
+      fromRect,
+      edge.fromSide ?? sideFacing(fromRect, rectMiddle(toRect)),
+      toRect,
+      edge.toSide ?? sideFacing(toRect, rectMiddle(fromRect)),
+    );
+    const along = sampleCurve(curve);
+
+    const near = raw.some((p) =>
+      along.some((q) => Math.hypot(p.x - q.x, p.y - q.y) < RECOGNIZER.edgeHitDistance),
+    );
+    if (near) hit.push(edge.id);
+  }
+  return hit;
+}
+
+function rectMiddle(r: Rect): { x: number; y: number } {
+  return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+}
+
+export function recognize(raw: Pt[], nodes: CanvasNode[], edges: CanvasEdge[] = []): Gesture {
   if (raw.length === 0) return { kind: "unknown" };
 
   const first = raw[0];
@@ -140,10 +175,15 @@ export function recognize(raw: Pt[], nodes: CanvasNode[]): Gesture {
     shapeCompactness < RECOGNIZER.scribbleMaxCompactness
   ) {
     const hitIds = nodes.filter((n) => strokeCrossesRect(raw, nodeRect(n))).map((n) => n.id);
-    // A scribble over empty canvas deleted nothing and said nothing. Rather
-    // than vanish, fall through so it is judged on its shape like any other
-    // stroke and the user gets either a card or an explanation.
-    if (hitIds.length > 0) return { kind: "scribble", nodeIds: hitIds, strokePoints: raw };
+    // Connectors count too. Requiring a card here meant scribbling out a link
+    // on its own did nothing at all, leaving no way to remove one without
+    // deleting a card.
+    const hitEdges = edgesCrossedBy(raw, nodes, edges);
+    // A scribble over genuinely empty canvas still falls through, so it is
+    // judged on its shape like any other stroke rather than vanishing.
+    if (hitIds.length > 0 || hitEdges.length > 0) {
+      return { kind: "scribble", nodeIds: hitIds, edgeIds: hitEdges };
+    }
   }
 
   const startNode = nodeAt(nodes, first, RECOGNIZER.nodeHitPadding);

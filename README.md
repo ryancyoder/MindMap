@@ -54,6 +54,24 @@ Cards grow to fit what you write, so a long thought is never clipped. Drag the
 corner grip on a selected card to size it by hand; a card you enlarge stays
 that way.
 
+## Pictures
+
+**Photo** puts a picture on the map. On an iPad that button offers the camera,
+the photo library, or a file — one control, because taking a photo of the thing
+you are mapping and finding one you already took are the same job.
+
+With a card selected the picture goes **on that card**, under whatever it says.
+With nothing selected it becomes **a card of its own**, shaped like the photo,
+and you can caption it by tapping it again. Dropping a picture onto the canvas
+does the same thing, and drops it onto a card if you aim at one; ⌘V pastes a
+screenshot the same way. **No photo** takes it off again, and undo puts it back.
+
+Pictures are resized on the way in — 1600px on the long edge — so a map full of
+them stays a few megabytes rather than a few hundred. They are stored beside
+the map rather than inside the `.canvas` file, which keeps the file readable
+text you can paste into a conversation. A map that travels as JSON therefore
+travels without its pictures, and says so on the cards that had one.
+
 ## Files
 
 Maps autosave to the browser on the device, and **Maps** lists everything
@@ -112,6 +130,10 @@ If the deployment has Supabase configured, the Maps sheet grows an **In the
 cloud** section. Push a map up and it becomes readable and writable by your
 agents; open one back down to keep working on it here. The listing shows who
 touched each map last, so an agent's edits are visible as theirs.
+
+Pictures go up and come back down with the map they are on, so a photo taken on
+the iPad is there when an agent reads the map — and a push only sends the ones
+the cloud does not already have.
 
 Nothing syncs automatically — pushing and pulling are things you do — which
 keeps the conflict story honest: the newer push wins, and nothing merges behind

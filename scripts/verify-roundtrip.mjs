@@ -24,7 +24,9 @@ page.on("pageerror", (e) => errors.push(String(e)));
 await page.goto(BASE_URL, { waitUntil: "networkidle" });
 await page.waitForTimeout(400);
 
-await page.locator('input[type="file"]').setInputFiles(fixture);
+// Named by what it accepts: there is a second file input for pictures, and
+// "the file input" stopped being unambiguous the day it arrived.
+await page.locator('input[type="file"][accept*=".canvas"]').setInputFiles(fixture);
 await page.waitForTimeout(900);
 
 check("all five nodes rendered", await page.locator("[data-node-id]").count(), 5);

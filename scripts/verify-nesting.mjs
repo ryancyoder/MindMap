@@ -40,7 +40,7 @@ async function load(doc) {
 /** What Save .canvas would write for the map currently open. */
 const savedDoc = () =>
   page.evaluate(async () => {
-    const req = indexedDB.open("MindMapDB", 1);
+    const req = indexedDB.open("MindMapDB");
     const db = await new Promise((res, rej) => {
       req.onsuccess = () => res(req.result);
       req.onerror = () => rej(req.error);

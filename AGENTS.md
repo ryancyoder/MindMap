@@ -31,6 +31,7 @@ src/app/canvas.module.css  editor styles
 src/lib/jsoncanvas.ts      the ONLY module that knows the .canvas format
 src/lib/geometry.ts        stroke math, hit tests, edge anchoring
 src/lib/recognize.ts       stroke -> intent (the pen model lives here)
+src/lib/images.ts         camera/library/paste/drop -> a bounded data URL
 src/lib/store.ts           IndexedDB canvas library, localStorage last-opened
 src/lib/history.ts         undo/redo by snapshot
 ```
@@ -275,6 +276,56 @@ rather than estimating, because wrapping depends on the actual font.
 the card's padding or border in CSS, change them here too** — they were 3px
 apart once and that was enough to clip a whole wrapped line on a narrow card.
 
+## Pictures
+
+A picture is an extra key on a node — `IMAGE_KEY`, holding an image id — and
+never the bytes. The bytes live in an IndexedDB store of their own locally, and
+in `mindmap_images` in the cloud.
+
+**It is not a spec `file` node, and that is deliberate.** A file node would be
+the obvious move, by analogy with the doorway, and it is wrong twice: a picture
+has to be attachable to a card that already says something, and a file node
+naming a path that exists nowhere on disk is a lie Obsidian would render as a
+broken link. One extra key covers "this card is a photo" (a text node that has
+not been captioned yet) and "this card has a photo on it", and a caption keeps
+working either way.
+
+**The bytes stay out of the document.** A `.canvas` file is text a person reads
+and an agent rewrites; a few hundred kilobytes of base64 in the middle of it
+makes the file unreadable and the JSON sheet useless. The cloud library is
+normalised for the same reason — inlining a photo would put the largest value in
+the map into every whole-document save. The cost is real and is the accepted
+trade: a map pasted as JSON into a conversation arrives without its pictures,
+and the cards that had one say so rather than showing an empty frame.
+
+**Images are keyed globally, not per map.** A picture keyed by map would be
+stranded the moment its card was folded into a sub-map, unfolded back out, or
+pasted somewhere else. Keying by image id alone makes all three free, and
+`verify-images.mjs` covers the unfold case, which renames every incoming id.
+
+**Blobs are never deleted when a card is.** Undo has to bring the picture back,
+not just the reference to it — so removing a picture, or deleting the card
+carrying it, leaves the bytes behind. That does mean the local store only grows;
+after the size cap below, that is bounded enough to be the right trade, and a
+sweep would have to understand the undo stack to be safe.
+
+Pictures are resized on the way in, in `src/lib/images.ts`: `IMAGE_MAX_DIM` on
+the long edge, re-encoded as JPEG at `IMAGE_QUALITY`. An iPad camera produces a
+12-megapixel JPEG, and base64 adds a third on top — uncapped, one photo would be
+larger than every map in the library put together. Decoding through the browser
+also normalizes HEIC and PNG into one format, so nothing downstream has to know
+what the device handed over.
+
+The camera needs **no control of its own**: on iPadOS an `accept="image/*"` file
+input opens the native sheet with Take Photo, Photo Library and Choose File on
+it. One button, three sources, and the bottom bar does not grow a second one.
+
+Where a picture lands is decided by what is already selected, and by nothing
+else: one card selected means "on that card", anything else means "a card of its
+own". Paste and the button follow that rule; a drop uses the point it was
+dropped at instead, since aiming at a card is a clearer statement than selecting
+one first.
+
 ## JSON in and out
 
 `JSON` opens a sheet that pastes a map in or copies the current one out as
@@ -329,6 +380,10 @@ There is no unit test framework. Behavior is verified by driving the real app
 in a browser — see `scripts/README.md`. Run those after any change to the
 recognizer or the format module.
 
+Both places that open the app's IndexedDB from a check open it **without a
+version number**, so a store added to `store.ts` does not fail every script with
+a version error.
+
 Four bugs shipped past a fully green suite. Three fed the app something a hand
 never produces — trusted mouse events instead of pen events, geometrically
 perfect circles instead of shaky ones, 1px-wide touch contacts instead of real
@@ -343,6 +398,15 @@ it, and what shape of screen it is looking at.
 Maps live in Supabase in `mindmap_canvases` / `mindmap_nodes` / `mindmap_edges`,
 **normalised** rather than as one JSON blob — the whole point is that an agent
 can update a single card without reading and rewriting the document.
+
+Pictures are the exception to the "one map, three tables" shape: they live in
+`mindmap_images (canvas_id, image_key, data_url)`, keyed by the id its card
+carries in `extra->>'x-mindmap-image'`, so reading or rewriting a whole map does
+not drag megabytes of photograph through the query. `mindmap_save_images` is
+**not** a whole-set replace, unlike `mindmap_save_canvas` — a push sends only
+what the cloud is missing (`mindmap_canvas_image_keys` answers that without
+sending any bytes), and a partial batch must never delete the rest. What it does
+clear is rows no card points at any more.
 
 Every table carries an `extra` jsonb for attributes this schema does not model,
 because JSON Canvas lets applications add their own keys and dropping them
@@ -384,7 +448,7 @@ library lives in IndexedDB; `.canvas` files move in and out by file picker and
 download.
 
 v2 is the cloud library above: push a map up from the Maps sheet, open one back
-down, and agents read and write it in between.
+down, and agents read and write it in between. Pictures ride along with it.
 
 Planned, deliberately not built yet:
 

@@ -26,6 +26,7 @@ import {
   type Side,
   type TextNode,
 } from "@/lib/jsoncanvas";
+import { duplicateNodes } from "@/lib/duplicate";
 import { nodeAt, nodeRect, recognize, RECOGNIZER } from "@/lib/recognize";
 import { edgeCurve, rectsOverlap, snap } from "@/lib/geometry";
 import {
@@ -216,6 +217,8 @@ export default function CanvasClient() {
     startWorld: { x: number; y: number };
     lastScreen: { x: number; y: number };
     moved: boolean;
+    /** Armed by a long press: the first movement drags copies, not the cards. */
+    copy: boolean;
     /** Where every moving card started, so the drag is absolute, not cumulative. */
     origins: Map<string, { x: number; y: number }>;
   } | null>(null);
@@ -231,7 +234,7 @@ export default function CanvasClient() {
   const selectedIdsRef = useRef<string[]>([]);
   /** Modifier state captured at pointerdown, since a tap is judged on lift. */
   const gestureShiftRef = useRef(false);
-  /** Long-press on a card is the finger's equivalent of shift-click. */
+  /** Long-press on a card arms a copy, and for a finger also extends the selection. */
   const longPressRef = useRef<{ pointerId: number; timer: number } | null>(null);
   const longPressFiredRef = useRef(false);
   const resizeRef = useRef<{
@@ -454,9 +457,48 @@ export default function CanvasClient() {
       for (const n of docRef.current.nodes) {
         if (moving.has(n.id)) origins.set(n.id, { x: n.x, y: n.y });
       }
-      return { pointerId, nodeId, startWorld: world, lastScreen: screen, moved: false, origins };
+      return {
+        pointerId,
+        nodeId,
+        startWorld: world,
+        lastScreen: screen,
+        moved: false,
+        copy: false,
+        origins,
+      };
     },
     [],
+  );
+
+  /**
+   * Hold a card still and the drag it started becomes a copy: moving then
+   * carries duplicates away and leaves the originals where they were. Nothing
+   * is copied until the drag moves, so a long press that only lifts is still
+   * just a long press.
+   *
+   * `extend` names the card a finger's long press also toggles into the
+   * selection — the touch equivalent of shift-click, which the gesture had to
+   * itself before. A pen in select mode passes null: that branch has already
+   * selected what the pen came down on, so toggling would clear it.
+   */
+  const armLongPress = useCallback(
+    (pointerId: number, extend: string | null) => {
+      longPressFiredRef.current = false;
+      longPressRef.current = {
+        pointerId,
+        timer: window.setTimeout(() => {
+          const drag = nodeDragRef.current;
+          if (!drag || drag.pointerId !== pointerId || drag.moved) return;
+          longPressRef.current = null;
+          drag.copy = true;
+          if (extend) {
+            longPressFiredRef.current = true;
+            toggleSelected(extend);
+          }
+        }, LONG_PRESS_MS),
+      };
+    },
+    [toggleSelected],
   );
 
   const createTextNode = useCallback((rect: Rect): TextNode => {
@@ -758,20 +800,10 @@ export default function CanvasClient() {
             });
             panRef.current = null;
 
-            // Held still on a card, a finger toggles it into the selection —
-            // the touch equivalent of shift-clicking, and the only unused
-            // single-finger gesture left.
-            longPressFiredRef.current = false;
-            longPressRef.current = {
-              pointerId: e.pointerId,
-              timer: window.setTimeout(() => {
-                const drag = nodeDragRef.current;
-                if (!drag || drag.pointerId !== e.pointerId || drag.moved) return;
-                longPressFiredRef.current = true;
-                longPressRef.current = null;
-                toggleSelected(hit.id);
-              }, LONG_PRESS_MS),
-            };
+            // Held still on a card, a finger toggles it into the selection and
+            // arms a copy: lift and it was the touch equivalent of
+            // shift-clicking, drag on and the card is duplicated instead.
+            armLongPress(e.pointerId, hit.id);
           } else {
             nodeDragRef.current = null;
             panRef.current = {
@@ -813,6 +845,7 @@ export default function CanvasClient() {
             x: e.clientX,
             y: e.clientY,
           });
+          armLongPress(e.pointerId, null);
         } else {
           lassoRef.current = {
             pointerId: e.pointerId,
@@ -854,7 +887,16 @@ export default function CanvasClient() {
         // Non-fatal: window-level events still complete the stroke.
       }
     },
-    [beginNodeDrag, cancelAnim, commitEditing, editingId, selectOnly, toggleSelected, toWorld],
+    [
+      armLongPress,
+      beginNodeDrag,
+      cancelAnim,
+      commitEditing,
+      editingId,
+      selectOnly,
+      toggleSelected,
+      toWorld,
+    ],
   );
 
   const onPointerMove = useCallback(
@@ -891,6 +933,33 @@ export default function CanvasClient() {
         if (longPressRef.current) {
           clearTimeout(longPressRef.current.timer);
           longPressRef.current = null;
+        }
+        // A long press armed a copy, and this is the movement that spends it:
+        // duplicate what was about to move, then drag the duplicates instead.
+        // The originals never move, so nothing has shifted yet and the copies
+        // can start from the same origins the drag already recorded.
+        if (drag.copy) {
+          drag.copy = false;
+          const copies = duplicateNodes(docRef.current, drag.origins.keys());
+          if (copies.nodes.length) {
+            const origins = new Map<string, { x: number; y: number }>();
+            for (const [from, to] of copies.idMap) {
+              const at = drag.origins.get(from);
+              if (at) origins.set(to, at);
+            }
+            drag.origins = origins;
+            drag.nodeId = copies.idMap.get(drag.nodeId) ?? drag.nodeId;
+            setDoc((d) => ({
+              ...d,
+              nodes: [...d.nodes, ...copies.nodes],
+              edges: [...d.edges, ...copies.edges],
+            }));
+            // The copies are what the finger is holding, so they are what is
+            // selected — which also settles the selection the long press
+            // toggled on its way here.
+            setSelectedIds(copies.nodes.map((n) => n.id));
+            showToast(copies.nodes.length === 1 ? "Copied." : `${copies.nodes.length} copied.`);
+          }
         }
         // Live, without touching history; the whole drag is one undo entry.
         setDoc((d) => ({
@@ -988,7 +1057,7 @@ export default function CanvasClient() {
       }
       drawInk();
     },
-    [drawInk, gridSnap, toWorld],
+    [drawInk, gridSnap, showToast, toWorld],
   );
 
   /**
@@ -1183,6 +1252,10 @@ export default function CanvasClient() {
     const drag = nodeDragRef.current;
     if (!drag || drag.pointerId !== pointerId) return false;
     nodeDragRef.current = null;
+    if (longPressRef.current && longPressRef.current.pointerId === pointerId) {
+      clearTimeout(longPressRef.current.timer);
+      longPressRef.current = null;
+    }
     if (drag.moved) setDragCommit((t) => t + 1);
     return drag.moved;
   }, []);

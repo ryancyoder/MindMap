@@ -49,7 +49,8 @@ selects a mode; the shape of the stroke says what they meant:
 | short dab | select; dab again to edit |
 
 Fingers do the rest: one finger drags a card if it starts on one and pans the
-canvas if it doesn't, two fingers pinch-zoom, and a finger tap selects. Double-
+canvas if it doesn't, two fingers pinch-zoom, and a finger tap selects. Press
+and hold before dragging and the card is copied instead of moved. Double-
 tapping a card zooms to frame it; double-tapping away returns to the view you
 came from, or fits the whole map if there isn't one. Two fingers double-tapped
 undo; three redo. The
@@ -131,6 +132,23 @@ lift that follows a long press from also registering as a tap.
 Dragging a card that is *in* the selection moves the whole selection; dragging
 one that is not moves only it. The resize grip only appears when exactly one
 card is selected, since resizing several at once has no obvious meaning.
+
+**A long press also arms a copy.** Hold, then drag, and the originals stay put
+while duplicates come away under the finger. The two meanings of the gesture do
+not collide because different things settle them — lifting without moving
+extends the selection, moving spends the copy — and nothing is duplicated until
+the drag actually moves, so a long press that only selects still costs nothing.
+The copies come from the set the drag recorded at press time, which is exactly
+what a plain drag would have moved, and they replace the selection afterwards
+because they are what the finger is now holding.
+
+`src/lib/duplicate.ts` is pure and decides what a copy carries: fresh ids,
+because an id is only unique within its map; edges **between** copied cards but
+not edges to cards left behind, so a duplicated branch keeps its shape while a
+copy inherits no claim on the original's connections; and everything else
+verbatim, unknown keys included. A pen in select mode arms a copy the same way
+but does not toggle the selection — that branch has already selected whatever
+the pen came down on.
 
 Alignment matches **both centres and size**: cards in a column all take the
 widest width in the selection, so their left and right edges line up too.

@@ -363,6 +363,15 @@ and an OpenGraph banner is about one *article* — and a wall of banners reads a
 noise where a wall of icons reads as a shelf. The banner is kept as the fallback
 for a site that declares no icon.
 
+The card is square and six grid squares across. Bigger would upscale artwork
+that is usually 180 to 512px across; the grip is there for anyone who wants it
+bigger anyway.
+
+**The resize grip carries a `z-index`.** A bookmark's picture is positioned and
+comes later in the DOM, so without one it paints over the grip and the card
+cannot be resized at all — which is exactly how it shipped, and what
+`verify-bookmark.mjs` now checks by asking what a finger would actually land on.
+
 **The title is written over the icon, and that is a setting.** `linkTitles`
 (persisted as `mindmap_link_titles`, on unless turned off) decides whether a
 card carries its words; off, a map of bookmarks is a grid of icons. The scrim
@@ -374,18 +383,23 @@ A card with **no** picture keeps its words whatever the setting says, since
 there is nothing else to say what it is. With the words hidden the picture is
 the only thing naming the card, so the title moves to the image's `alt`.
 
-The icon is chosen the way iOS chooses one: `apple-touch-icon` first (its
-declared size is `sizes`, or 180 by convention), then the web app manifest,
-then any declared `rel=icon` at least `ICON_MIN` across, then a guess at
-`/apple-touch-icon.png`, which iOS probes whether or not a page names it. That
-last one is not checked server-side — the card falls back by itself if the file
-is not there, which saves a request on every site that does have one.
+**Size leads when choosing which icon.** The obvious ordering is Apple's first,
+since that is the one iOS shows — and it gives a blurry card, because
+`apple-touch-icon` is 180px by convention, the card is `BOOKMARK_CARD` and can
+be dragged bigger, and the screen is 2x. A site's manifest usually carries the
+same artwork at 512, and the sharp copy of the same picture is the better answer
+to "show me the icon". So the largest wins, with `apple-touch-icon` breaking a
+tie at equal size, and the route goes and reads the manifest when what the page
+declared is under `ICON_TARGET`. Anything left over falls back to a guess at
+`/apple-touch-icon.png`, which iOS probes whether or not a page names it — not
+checked server-side, because the card falls back by itself if the file is not
+there, which saves a request on every site that does have one.
 
 **A favicon under `ICON_MIN` is refused on purpose.** Blown up to fill a card, a
 16px favicon is a blurry smear; a site with nothing bigger is better served by
-its banner. Manifest icons marked `maskable` are ranked below plain ones for a
-related reason: they carry deliberate bleed for the platform to crop, and look
-wrong shown whole.
+its banner. Manifest icons marked `maskable` are ranked below everything however
+big they are, for a related reason: they carry deliberate bleed for the platform
+to crop, and look wrong shown whole.
 
 The manifest is a **second request to a URL taken from the page**, so it goes
 through the same guard as the first — it is exactly as untrusted.

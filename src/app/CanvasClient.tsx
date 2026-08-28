@@ -152,9 +152,13 @@ const ZOOM_ANIM_MS = 260;
 /** Matches the dot grid in canvas.module.css. Change both together. */
 const GRID = 28;
 
-/** A bookmark card is square, so a preview image fills it without cropping to
- *  a letterbox. Eight grid squares, so it lands on the grid when snap is on. */
-const BOOKMARK_CARD = GRID * 8;
+/**
+ * A bookmark card is square, because the icon that fills it is. Six grid
+ * squares, so it lands on the grid when snap is on — and no bigger, because the
+ * icon a site ships is typically 180 to 512px and a card larger than that is
+ * upscaling somebody's artwork. Drag the grip if you want it bigger.
+ */
+const BOOKMARK_CARD = GRID * 6;
 
 /** How many previews to chase at once when a map arrives full of bare links. */
 const PREVIEW_BATCH = 6;

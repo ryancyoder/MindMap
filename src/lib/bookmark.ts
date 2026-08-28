@@ -14,6 +14,16 @@ import type { LinkPreview } from "./jsoncanvas";
  */
 export const ICON_MIN = 64;
 
+/**
+ * The size an icon has to reach before it is worth no further trouble.
+ *
+ * A bookmark card is 168px and can be dragged bigger, on a screen that is
+ * almost certainly 2x — so a 180px icon is already being asked for more pixels
+ * than it has. Below this it is worth a second request to see whether the site
+ * has better art somewhere.
+ */
+export const ICON_TARGET = 256;
+
 /** What `apple-touch-icon` means when it declares no size. */
 const APPLE_DEFAULT = 180;
 
@@ -24,6 +34,8 @@ const SCALABLE = 4096;
 export type PageMetadata = LinkPreview & {
   /** A web app manifest to read icons out of, if the page named one. */
   manifest: string | null;
+  /** How big the chosen icon is, so the caller can decide whether to look further. */
+  iconSize: number;
 };
 
 /**
@@ -113,11 +125,30 @@ function largestSize(value: string | null): number {
 
 type IconCandidate = { url: string; rank: number; size: number };
 
-/** Best first: Apple's icon, then anything else big enough to be worth showing. */
-function bestIcon(candidates: IconCandidate[]): string | null {
+/** An icon and how big it is, so a caller can tell whether to keep looking. */
+export type IconChoice = { url: string; size: number };
+
+/**
+ * Best first, and **size leads**.
+ *
+ * The obvious ordering is Apple's icon first, since that is the one iOS shows.
+ * It gives a blurry card: `apple-touch-icon` is 180px by convention, the card
+ * is 168 and can be dragged bigger, and the screen is 2x — so the picture is
+ * upscaled before it is even touched. A site's manifest usually carries the
+ * same artwork at 512, and the sharp copy of the same picture is the better
+ * answer to "show me the icon".
+ *
+ * Maskable icons stay last whatever their size, because they are drawn with
+ * bleed for the platform to crop and look wrong shown whole. Among icons of the
+ * same size, Apple's is the one iOS would have picked.
+ */
+function bestIcon(candidates: IconCandidate[]): IconChoice | null {
   const usable = candidates.filter((c) => c.size >= ICON_MIN);
-  usable.sort((a, b) => b.rank - a.rank || b.size - a.size);
-  return usable[0]?.url ?? null;
+  usable.sort(
+    (a, b) => Number(b.rank > 0) - Number(a.rank > 0) || b.size - a.size || b.rank - a.rank,
+  );
+  const best = usable[0];
+  return best ? { url: best.url, size: best.size } : null;
 }
 
 /**
@@ -128,7 +159,7 @@ function bestIcon(candidates: IconCandidate[]): string | null {
  * wrong shown whole. Anything else is preferred, and one is used only if
  * nothing else offered.
  */
-export function iconFromManifest(manifest: unknown, baseUrl: string): string | null {
+export function iconFromManifest(manifest: unknown, baseUrl: string): IconChoice | null {
   if (!manifest || typeof manifest !== "object") return null;
   const icons = (manifest as { icons?: unknown }).icons;
   if (!Array.isArray(icons)) return null;
@@ -216,10 +247,12 @@ export function readMetadata(html: string, baseUrl: string): PageMetadata {
     });
   }
 
+  const icon = bestIcon(icons);
   return {
     title,
     site: meta.get("og:site_name") || hostOf(baseUrl),
-    icon: bestIcon(icons),
+    icon: icon?.url ?? null,
+    iconSize: icon?.size ?? 0,
     image: rawImage ? absoluteImage(rawImage, baseUrl) : null,
     manifest,
   };

@@ -8,7 +8,14 @@
 
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
-import { hostOf, iconFromManifest, normalizeUrl, readMetadata } from "@/lib/bookmark";
+import {
+  hostOf,
+  ICON_TARGET,
+  iconFromManifest,
+  normalizeUrl,
+  readMetadata,
+  type IconChoice,
+} from "@/lib/bookmark";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -104,7 +111,7 @@ async function readHead(response: Response): Promise<string> {
  * which makes it exactly as untrusted as the first, so it goes through the same
  * guard. Failing is fine: the caller has other places to look.
  */
-async function manifestIcon(manifestUrl: string): Promise<string | null> {
+async function manifestIcon(manifestUrl: string): Promise<IconChoice | null> {
   try {
     const url = new URL(manifestUrl);
     if (!(await isReachable(url))) return null;
@@ -170,10 +177,21 @@ export async function GET(request: Request) {
       const type = response.headers.get("content-type") ?? "";
       if (!/^(text\/html|application\/xhtml\+xml)/i.test(type)) return Response.json(fallback);
 
-      const { manifest, ...meta } = readMetadata(await readHead(response), current.toString());
-      const icon =
-        meta.icon ?? (manifest ? await manifestIcon(manifest) : null) ?? guessedIcon;
-      return Response.json({ url: normalized, ...meta, icon });
+      const { manifest, iconSize, ...meta } = readMetadata(
+        await readHead(response),
+        current.toString(),
+      );
+
+      // A small icon is a blurry card, so it is worth a second request to see
+      // whether the manifest carries the same artwork bigger. A page that
+      // already declares something large enough is left alone.
+      let icon = meta.icon;
+      if (manifest && iconSize < ICON_TARGET) {
+        const better = await manifestIcon(manifest);
+        if (better && better.size > iconSize) icon = better.url;
+      }
+
+      return Response.json({ url: normalized, ...meta, icon: icon ?? guessedIcon });
     }
   } catch {
     // Timeout, DNS failure, refused connection: all the same answer.

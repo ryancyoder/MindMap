@@ -32,11 +32,22 @@ check(
   iconOf(`<link rel="apple-touch-icon" href="/touch.png">`),
   "https://example.com/touch.png",
 );
+// Size leads over provenance: apple-touch-icon is 180 by convention, the card
+// is 168 on a 2x screen, and the sharp copy of the same artwork is the better
+// answer to "show me the icon".
 check(
-  "even when a bigger plain icon is offered, because iOS prefers Apple's",
+  "a bigger icon beats Apple's smaller one, because the card would upscale it",
   iconOf(
     `<link rel="icon" sizes="512x512" href="/big.png">` +
       `<link rel="apple-touch-icon" href="/touch.png">`,
+  ),
+  "https://example.com/big.png",
+);
+check(
+  "at the same size, Apple's is the one iOS would have used",
+  iconOf(
+    `<link rel="icon" sizes="180x180" href="/plain.png">` +
+      `<link rel="apple-touch-icon" sizes="180x180" href="/touch.png">`,
   ),
   "https://example.com/touch.png",
 );
@@ -97,7 +108,7 @@ check(
   "https://example.com/site.webmanifest",
 );
 
-const manifest = (icons) => iconFromManifest({ icons }, "https://example.com/");
+const manifest = (icons) => iconFromManifest({ icons }, "https://example.com/")?.url ?? null;
 check(
   "the manifest's largest icon is the one taken",
   manifest([
@@ -107,7 +118,7 @@ check(
   "https://example.com/m-512.png",
 );
 check(
-  "a maskable icon loses to a plain one, since it is drawn to be cropped",
+  "a maskable icon loses to a plain one whatever its size, being drawn to be cropped",
   manifest([
     { src: "/mask.png", sizes: "512x512", purpose: "maskable" },
     { src: "/plain.png", sizes: "192x192" },
@@ -120,6 +131,18 @@ check(
   "https://example.com/mask.png",
 );
 check("a manifest with no icons says so", manifest(undefined), null);
+
+// The route uses the size to decide whether to go and read the manifest at all.
+check(
+  "how big the chosen icon is, is reported",
+  readMetadata(markup(`<link rel="apple-touch-icon" href="/t.png">`), "https://example.com/").iconSize,
+  180,
+);
+check(
+  "and is zero when there is no icon to have",
+  readMetadata(markup(""), "https://example.com/").iconSize,
+  0,
+);
 
 // The OpenGraph picture is still read, as the fallback for a site with no icon.
 check(
@@ -488,6 +511,58 @@ check("a link with no picture keeps its words", (await titlesOn()) > 0, true);
 await page.reload({ waitUntil: "networkidle" });
 await page.waitForTimeout(900);
 check("and the setting survives a reload", await titlesOn(), 1);
+
+// The grip has to be reachable on a bookmark too. The card's picture is
+// absolutely positioned and comes later in the DOM, so without a stacking order
+// it paints straight over the grip and the card cannot be resized at all.
+await page.keyboard.press("Escape");
+await page.waitForTimeout(150);
+const grip = await page.evaluate(() => {
+  const card = document.querySelector("[data-node-id]");
+  card.scrollIntoView();
+  return { id: card.dataset.nodeId, w: parseFloat(card.style.width), h: parseFloat(card.style.height) };
+});
+await page.locator(`[data-node-id="${grip.id}"]`).click();
+await page.waitForTimeout(250);
+const gripBox = await page.locator("[data-resize-handle]").boundingBox();
+check("a selected bookmark offers a resize grip", !!gripBox, true);
+check(
+  "and the grip is what a finger lands on, not the picture",
+  await page.evaluate(
+    ({ x, y }) => !!document.elementFromPoint(x, y)?.closest("[data-resize-handle]"),
+    { x: gripBox.x + gripBox.width / 2, y: gripBox.y + gripBox.height / 2 },
+  ),
+  true,
+);
+await page.evaluate(
+  ({ x, y }) => {
+    // The press lands on the grip and bubbles to the surface, which is how a
+    // real touch arrives — the handler reads the target to know it is a resize.
+    const surface = document.querySelector('[class*="surface"]');
+    const handle = document.querySelector("[data-resize-handle]");
+    const at = (node, type, cx, cy) =>
+      node.dispatchEvent(
+        new PointerEvent(type, {
+          pointerId: 91, pointerType: "touch", isPrimary: true,
+          clientX: cx, clientY: cy, width: 40, height: 40,
+          pressure: type === "pointerup" ? 0 : 0.5, bubbles: true, cancelable: true,
+        }),
+      );
+    at(handle, "pointerdown", x, y);
+    for (let i = 1; i <= 8; i++) at(surface, "pointermove", x + i * 8, y + i * 6);
+    at(surface, "pointerup", x + 64, y + 48);
+  },
+  { x: gripBox.x + gripBox.width / 2, y: gripBox.y + gripBox.height / 2 },
+);
+await page.waitForTimeout(350);
+check(
+  "dragging it makes the card bigger",
+  await page.evaluate((id) => {
+    const card = document.querySelector(`[data-node-id="${id}"]`);
+    return { w: parseFloat(card.style.width), h: parseFloat(card.style.height) };
+  }, grip.id),
+  { w: grip.w + 64, h: grip.h + 48 },
+);
 
 check("no page errors", errors, []);
 

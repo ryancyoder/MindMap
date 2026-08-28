@@ -13,8 +13,120 @@
 // on, and a redirect into any of them.
 
 import { BASE_URL, launchBrowser, makeChecker, readPersistedCanvas } from "./_harness.mjs";
+import { iconFromManifest, readMetadata } from "../src/lib/bookmark.ts";
 
 const { check, finish } = makeChecker();
+
+// ── which icon a page's markup means ───────────────────────────────────────
+//
+// The card wants the icon iOS would put on the home screen, and a page can
+// declare half a dozen. This is the ordering, checked against the module
+// directly — node strips the types, so the real code runs with no build step
+// and no browser in the way.
+
+const markup = (head) => `<html><head>${head}</head><body></body></html>`;
+const iconOf = (head, base = "https://example.com/a/b") => readMetadata(markup(head), base).icon;
+
+check(
+  "an apple-touch-icon is what gets used",
+  iconOf(`<link rel="apple-touch-icon" href="/touch.png">`),
+  "https://example.com/touch.png",
+);
+check(
+  "even when a bigger plain icon is offered, because iOS prefers Apple's",
+  iconOf(
+    `<link rel="icon" sizes="512x512" href="/big.png">` +
+      `<link rel="apple-touch-icon" href="/touch.png">`,
+  ),
+  "https://example.com/touch.png",
+);
+check(
+  "the largest apple-touch-icon wins among its own",
+  iconOf(
+    `<link rel="apple-touch-icon" sizes="120x120" href="/small.png">` +
+      `<link rel="apple-touch-icon" sizes="180x180" href="/large.png">`,
+  ),
+  "https://example.com/large.png",
+);
+check(
+  "apple-touch-icon-precomposed counts too",
+  iconOf(`<link rel="apple-touch-icon-precomposed" href="/pre.png">`),
+  "https://example.com/pre.png",
+);
+check(
+  "a 16px favicon is not a picture, so it is refused",
+  iconOf(`<link rel="shortcut icon" sizes="16x16" href="/favicon.ico">`),
+  null,
+);
+check(
+  "a favicon with no size at all is refused for the same reason",
+  iconOf(`<link rel="icon" href="/favicon.ico">`),
+  null,
+);
+check(
+  "a big enough plain icon is used when Apple's is absent",
+  iconOf(`<link rel="icon" sizes="192x192" href="/icon-192.png">`),
+  "https://example.com/icon-192.png",
+);
+check(
+  "an SVG icon outranks a bitmap, since it is whatever size we ask",
+  iconOf(
+    `<link rel="icon" sizes="192x192" href="/icon.png">` +
+      `<link rel="icon" sizes="any" type="image/svg+xml" href="/icon.svg">`,
+  ),
+  "https://example.com/icon.svg",
+);
+check(
+  "a relative href resolves against the page, not the site root",
+  iconOf(`<link rel="apple-touch-icon" href="touch.png">`),
+  "https://example.com/a/touch.png",
+);
+check(
+  "a protocol-relative href keeps the page's scheme",
+  iconOf(`<link rel="apple-touch-icon" href="//cdn.example.net/t.png">`),
+  "https://cdn.example.net/t.png",
+);
+check(
+  "an entity-escaped href is unescaped",
+  iconOf(`<link rel="apple-touch-icon" href="/t.png?a=1&amp;b=2">`),
+  "https://example.com/t.png?a=1&b=2",
+);
+check(
+  "a manifest is reported so the route can go and read it",
+  readMetadata(markup(`<link rel="manifest" href="/site.webmanifest">`), "https://example.com/").manifest,
+  "https://example.com/site.webmanifest",
+);
+
+const manifest = (icons) => iconFromManifest({ icons }, "https://example.com/");
+check(
+  "the manifest's largest icon is the one taken",
+  manifest([
+    { src: "/m-192.png", sizes: "192x192" },
+    { src: "/m-512.png", sizes: "512x512" },
+  ]),
+  "https://example.com/m-512.png",
+);
+check(
+  "a maskable icon loses to a plain one, since it is drawn to be cropped",
+  manifest([
+    { src: "/mask.png", sizes: "512x512", purpose: "maskable" },
+    { src: "/plain.png", sizes: "192x192" },
+  ]),
+  "https://example.com/plain.png",
+);
+check(
+  "but a maskable icon is better than nothing",
+  manifest([{ src: "/mask.png", sizes: "512x512", purpose: "maskable" }]),
+  "https://example.com/mask.png",
+);
+check("a manifest with no icons says so", manifest(undefined), null);
+
+// The OpenGraph picture is still read, as the fallback for a site with no icon.
+check(
+  "the banner is still picked up",
+  readMetadata(markup(`<meta property="og:image" content="/banner.jpg">`), "https://example.com/").image,
+  "https://example.com/banner.jpg",
+);
 
 // ── the route refuses to go anywhere private ───────────────────────────────
 
@@ -76,12 +188,13 @@ await page.route("**/api/bookmark**", async (route) => {
     body: JSON.stringify({
       url: "https://jsoncanvas.org/spec/1.0/",
       title: "JSON Canvas Spec 1.0",
+      icon: `${BASE_URL}/__stub-icon.png`,
       image: `${BASE_URL}/__stub.png`,
       site: "jsoncanvas.org",
     }),
   });
 });
-await page.route("**/__stub.png", (route) =>
+await page.route("**/__stub*.png", (route) =>
   route.fulfill({ status: 200, contentType: "image/png", body: Buffer.from(PIXEL, "base64") }),
 );
 
@@ -112,9 +225,21 @@ check("pasting a link makes one card", made.length, 1);
 check("the card is square", made[0] && made[0].w === made[0].h, true);
 check("the preview was asked for", previewRequests, 1);
 check(
-  "the card shows the page's picture",
-  await page.locator('[data-node-id] img').count(),
+  "the card shows one picture",
+  await page.locator("[data-node-id] img").count(),
   1,
+);
+// The icon is the point: a bookmark says which site this is, and a banner says
+// which article. Given both, the icon is what shows.
+check(
+  "and it is the site's icon, laid out like a home-screen tile",
+  await page.locator('img[class*="bookmarkIcon"]').count(),
+  1,
+);
+check(
+  "not the OpenGraph banner",
+  await page.locator('[class*="bookmarkImage"]').count(),
+  0,
 );
 check(
   "and its title",
@@ -141,6 +266,11 @@ const link = doc.nodes.find((n) => n.type === "link");
 check("it is saved as a spec link node", !!link, true);
 check("with the url it was given", link.url, "https://jsoncanvas.org/spec/1.0/");
 check("and the preview cached beside it", link["x-mindmap-preview"].title, "JSON Canvas Spec 1.0");
+check(
+  "the icon is what the card remembers",
+  link["x-mindmap-preview"].icon,
+  `${BASE_URL}/__stub-icon.png`,
+);
 check("nothing invented at the top level", Object.keys(doc).sort().join(), "edges,nodes");
 
 // ── the sheet, which is the path without a keyboard ────────────────────────
@@ -277,6 +407,39 @@ check(
   "and the picture is what it made",
   both.nodes.filter((n) => n.url === "https://example.net/an-article").length,
   0,
+);
+
+// A site that declares no icon at all falls back to its OpenGraph picture,
+// rather than to nothing.
+await page.route("**/api/bookmark**", (route) =>
+  route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({
+      title: "An article somewhere",
+      icon: null,
+      image: `${BASE_URL}/__stub.png`,
+      site: "example.org",
+    }),
+  }),
+);
+const beforeIconless = (await nodes()).length;
+await page.keyboard.press("Escape");
+await page.waitForTimeout(200);
+await pasteOnCanvas("https://example.org/an-article");
+await page.waitForTimeout(700);
+check("a site with no icon still makes a card", (await nodes()).length - beforeIconless, 1);
+check(
+  "and falls back to its banner",
+  await page.evaluate(() => {
+    const cards = [...document.querySelectorAll("[data-node-id]")];
+    const card = cards[cards.length - 1];
+    return {
+      banner: card.querySelectorAll('[class*="bookmarkImage"]').length,
+      icon: card.querySelectorAll('img[class*="bookmarkIcon"]').length,
+    };
+  }),
+  { banner: 1, icon: 0 },
 );
 
 check("no page errors", errors, []);

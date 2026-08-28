@@ -347,14 +347,42 @@ dropped at instead, since aiming at a card is a clearer statement than selecting
 one first.
 ## Links
 
-Paste a link onto the canvas and it becomes a square card showing the page's
-own picture. There is also a **Link** button, because pasting needs a keyboard
-and this is an iPad app first; the button opens a field, which is somewhere
-iPadOS will offer Paste.
+Paste a link onto the canvas and it becomes a square card showing the site's
+own icon. There is also a **Link** button, because pasting needs a keyboard and
+this is an iPad app first; the button opens a field, which is somewhere iPadOS
+will offer Paste.
 
-The card is a spec `link` node — nothing invented — and the fetched title,
+The card is a spec `link` node — nothing invented — and the fetched title, icon,
 image and site name ride alongside in `PREVIEW_KEY`, an extra key that survives
 a round trip. Obsidian and anything else still see an ordinary link node.
+
+**The icon, not the banner.** A card shows the icon iOS would put on the home
+screen for that link, laid out the same way: centred at the size it was drawn
+for, on a quiet ground, with the title beneath. That is the right picture
+because a bookmark is about a *site* and an OpenGraph banner is about one
+*article* — and a wall of banners reads as noise where a wall of icons reads as
+a shelf. The banner is kept as the fallback for a site that declares no icon.
+
+The icon is chosen the way iOS chooses one: `apple-touch-icon` first (its
+declared size is `sizes`, or 180 by convention), then the web app manifest,
+then any declared `rel=icon` at least `ICON_MIN` across, then a guess at
+`/apple-touch-icon.png`, which iOS probes whether or not a page names it. That
+last one is not checked server-side — the card falls back by itself if the file
+is not there, which saves a request on every site that does have one.
+
+**A favicon under `ICON_MIN` is refused on purpose.** Blown up to fill a card, a
+16px favicon is a blurry smear; a site with nothing bigger is better served by
+its banner. Manifest icons marked `maskable` are ranked below plain ones for a
+related reason: they carry deliberate bleed for the platform to crop, and look
+wrong shown whole.
+
+The manifest is a **second request to a URL taken from the page**, so it goes
+through the same guard as the first — it is exactly as untrusted.
+
+A preview written before icons existed has no `icon` key at all, which is not
+the same as one that looked and found none. `previewNeedsFetch` reads the key's
+*presence* as the record that the question was asked, so old maps fill in their
+icons once and iconless sites are not re-asked on every load.
 
 **The card appears immediately and the picture arrives when it arrives.** A
 bookmark that waited on a stranger's server before showing up would feel broken

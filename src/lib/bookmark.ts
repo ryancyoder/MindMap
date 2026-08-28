@@ -8,6 +8,25 @@
 import type { LinkPreview } from "./jsoncanvas";
 
 /**
+ * Smaller than this and an icon is not a picture, it is a postage stamp. A
+ * 16px favicon blown up to fill a card is a blurry smear, so a site that
+ * declares nothing bigger is better served by its OpenGraph image.
+ */
+export const ICON_MIN = 64;
+
+/** What `apple-touch-icon` means when it declares no size. */
+const APPLE_DEFAULT = 180;
+
+/** An SVG is whatever size we ask for, so it outranks any fixed bitmap. */
+const SCALABLE = 4096;
+
+/** Everything a page says about itself, plus where to look for more. */
+export type PageMetadata = LinkPreview & {
+  /** A web app manifest to read icons out of, if the page named one. */
+  manifest: string | null;
+};
+
+/**
  * The link a string means, or null if it doesn't mean one.
  *
  * Bare hosts count — pasting `example.com/page` from a mailing list should
@@ -77,15 +96,76 @@ function attr(tag: string, name: string): string | null {
 }
 
 /**
+ * The size a `sizes` attribute claims, as a single number to sort by.
+ *
+ * `sizes` may list several ("32x32 16x16") or say `any`, which means an SVG.
+ */
+function largestSize(value: string | null): number {
+  if (!value) return 0;
+  if (/(^|\s)any(\s|$)/i.test(value)) return SCALABLE;
+  let best = 0;
+  for (const token of value.split(/\s+/)) {
+    const dims = /^(\d+)x(\d+)$/i.exec(token);
+    if (dims) best = Math.max(best, Number(dims[1]));
+  }
+  return best;
+}
+
+type IconCandidate = { url: string; rank: number; size: number };
+
+/** Best first: Apple's icon, then anything else big enough to be worth showing. */
+function bestIcon(candidates: IconCandidate[]): string | null {
+  const usable = candidates.filter((c) => c.size >= ICON_MIN);
+  usable.sort((a, b) => b.rank - a.rank || b.size - a.size);
+  return usable[0]?.url ?? null;
+}
+
+/**
+ * The icon a web app manifest declares, if it declares one worth using.
+ *
+ * `maskable` icons are drawn expecting to be cropped to whatever shape the
+ * platform likes, so they carry deliberate bleed around the edges and look
+ * wrong shown whole. Anything else is preferred, and one is used only if
+ * nothing else offered.
+ */
+export function iconFromManifest(manifest: unknown, baseUrl: string): string | null {
+  if (!manifest || typeof manifest !== "object") return null;
+  const icons = (manifest as { icons?: unknown }).icons;
+  if (!Array.isArray(icons)) return null;
+
+  const candidates: IconCandidate[] = [];
+  for (const entry of icons) {
+    if (!entry || typeof entry !== "object") continue;
+    const { src, sizes, purpose } = entry as Record<string, unknown>;
+    if (typeof src !== "string" || !src) continue;
+    const url = absoluteImage(src, baseUrl);
+    if (!url) continue;
+    const maskable = typeof purpose === "string" && /maskable/i.test(purpose);
+    candidates.push({
+      url,
+      rank: maskable ? 0 : 1,
+      size: largestSize(typeof sizes === "string" ? sizes : null),
+    });
+  }
+  return bestIcon(candidates);
+}
+
+/**
  * What a page says about itself: OpenGraph first, since that is the tag every
  * site maintains for exactly this purpose, then Twitter's, then the plain
  * `<title>`. Parsed with regexes rather than a DOM because this runs on the
- * server, where pulling in a parser to read four tags is not worth the weight.
+ * server, where pulling in a parser to read a handful of tags is not worth the
+ * weight.
+ *
+ * The icon is picked the way iOS picks one for the home screen: an
+ * `apple-touch-icon` if there is one, then the manifest (which the caller
+ * fetches, since it is a second request), then any declared icon big enough to
+ * be worth looking at.
  *
  * `baseUrl` is the URL the HTML actually came from, after redirects, so a
- * relative `og:image` resolves against the right host.
+ * relative href resolves against the right host.
  */
-export function readMetadata(html: string, baseUrl: string): LinkPreview {
+export function readMetadata(html: string, baseUrl: string): PageMetadata {
   const meta = new Map<string, string>();
   for (const tag of html.match(/<meta\b[^>]*>/gi) ?? []) {
     const key = (attr(tag, "property") ?? attr(tag, "name"))?.toLowerCase();
@@ -107,10 +187,41 @@ export function readMetadata(html: string, baseUrl: string): LinkPreview {
     meta.get("twitter:image") ||
     meta.get("twitter:image:src");
 
+  const icons: IconCandidate[] = [];
+  let manifest: string | null = null;
+
+  for (const tag of html.match(/<link\b[^>]*>/gi) ?? []) {
+    const rels = (attr(tag, "rel") ?? "").toLowerCase().split(/\s+/);
+    const href = attr(tag, "href");
+    if (!href) continue;
+
+    if (rels.includes("manifest")) {
+      manifest = manifest ?? absoluteImage(href, baseUrl);
+      continue;
+    }
+
+    const apple =
+      rels.includes("apple-touch-icon") || rels.includes("apple-touch-icon-precomposed");
+    if (!apple && !rels.includes("icon")) continue;
+
+    const url = absoluteImage(href, baseUrl);
+    if (!url) continue;
+    // An apple-touch-icon with no size is 180px by convention, and is what iOS
+    // reaches for first. A plain <link rel=icon> with no size is usually the
+    // 16px favicon, and gets no benefit of the doubt.
+    icons.push({
+      url,
+      rank: apple ? 2 : 1,
+      size: largestSize(attr(tag, "sizes")) || (apple ? APPLE_DEFAULT : 0),
+    });
+  }
+
   return {
     title,
-    image: rawImage ? absoluteImage(rawImage, baseUrl) : null,
     site: meta.get("og:site_name") || hostOf(baseUrl),
+    icon: bestIcon(icons),
+    image: rawImage ? absoluteImage(rawImage, baseUrl) : null,
+    manifest,
   };
 }
 

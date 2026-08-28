@@ -123,7 +123,7 @@ rather than adding a second one, and that a paste carrying both a picture and
 its address — which is what copying from a web page gives you — leaves one card
 behind rather than one of each.
 
-`verify-bookmark.mjs` covers link cards in two halves. The card is checked in
+`verify-bookmark.mjs` covers link cards in three halves. The card is checked in
 the browser with the preview route stubbed, because a suite that fetches a real
 website fails on the day that website is slow rather than on the day this code
 is wrong. The route's own checks are the refusals, and they are the ones that
@@ -131,6 +131,15 @@ matter: it takes a URL from the user and asks the network for it, from a server
 sitting next to a service-role key, so loopback, the private ranges, the
 link-local block cloud providers keep credentials on, and non-web schemes all
 have to come back refused.
+
+The third part imports `src/lib/bookmark.ts` **directly** and checks which icon
+a page's markup means — that Apple's is preferred over a larger plain one, that
+a 16px favicon is refused rather than blown up, that an SVG outranks a bitmap,
+that a maskable manifest icon loses to a plain one. That ordering is the fiddly
+part of the feature and it needs neither a browser nor a network, so it is
+checked against the real module rather than through two layers of stub. Node
+strips the types on import; a Node too old for that needs
+`--experimental-strip-types`.
 
 `verify-cloud.mjs` drives the cloud library through the app's own routes. It
 needs `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` and **skips cleanly** when

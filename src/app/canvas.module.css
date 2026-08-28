@@ -259,6 +259,35 @@
   user-select: none;
 }
 
+/* The site's own icon, shown the way a home screen shows one: centred on a
+   quiet ground at a size it was drawn for, rather than stretched over the card.
+   The padding keeps it clear of the label below. */
+.bookmarkIconWrap {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding-bottom: 46px;
+  background: color-mix(in srgb, var(--accent-soft) 45%, var(--surface));
+}
+
+.bookmarkIcon {
+  width: 96px;
+  height: 96px;
+  object-fit: contain;
+  /* The shape iOS masks an icon into. Sites ship square art expecting it. */
+  border-radius: 22%;
+  /* Icons are drawn to sit on something opaque; a transparent one on the card's
+     own ground would lose its edges in dark mode. */
+  background: #fff;
+  /* The ring is what keeps a near-white icon — Apple's, and plenty of others —
+     from dissolving into the card it sits on. */
+  box-shadow: 0 6px 18px rgb(0 0 0 / 0.2), inset 0 0 0 1px rgb(0 0 0 / 0.08);
+  -webkit-user-drag: none;
+  user-select: none;
+}
+
 /* No picture, or one that refused to load: the card still has to read as a
    link rather than as an empty box. */
 .bookmarkGlyph {
@@ -283,11 +312,16 @@
   color: #fff;
 }
 
-/* With no picture behind it, the label is just text on a card and should be
-   coloured like text on a card. The gradient exists to survive a photograph. */
+/* With no photograph behind it, the label is just text on a card and should be
+   coloured like text on a card — and centred, since it is captioning the icon
+   above it rather than lying over a picture. The gradient exists to survive a
+   photograph, and there is none here. */
 .bookmarkLabelPlain {
+  align-items: center;
+  padding-top: 8px;
   background: none;
   color: var(--text);
+  text-align: center;
 }
 
 .bookmarkLabelPlain .bookmarkTitle,

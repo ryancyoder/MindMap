@@ -307,7 +307,19 @@ export function nestedCanvasName(node: CanvasNode): string {
  */
 export const PREVIEW_KEY = "x-mindmap-preview";
 
-export type LinkPreview = { title: string; image: string | null; site: string };
+export type LinkPreview = {
+  title: string;
+  site: string;
+  /**
+   * The site's own icon — what iOS shows when a link goes on the home screen.
+   * This is what a bookmark card wants: a banner is about one article, an icon
+   * is about the site, and a wall of banners reads as noise where a wall of
+   * icons reads as a shelf.
+   */
+  icon: string | null;
+  /** The OpenGraph picture, kept as the fallback for a site with no icon. */
+  image: string | null;
+};
 
 /** The preview cached on a node, if it has been fetched and looks sane. */
 export function linkPreview(node: CanvasNode): LinkPreview | null {
@@ -315,9 +327,26 @@ export function linkPreview(node: CanvasNode): LinkPreview | null {
   if (!isRecord(value)) return null;
   const title = typeof value.title === "string" ? value.title : "";
   const site = typeof value.site === "string" ? value.site : "";
+  const icon = typeof value.icon === "string" && value.icon ? value.icon : null;
   const image = typeof value.image === "string" && value.image ? value.image : null;
-  if (!title && !site && !image) return null;
-  return { title, image, site };
+  if (!title && !site && !icon && !image) return null;
+  return { title, site, icon, image };
+}
+
+/**
+ * Whether a link card still has to be asked about.
+ *
+ * A preview written before icons existed has no `icon` key at all, which is
+ * different from one that looked and found none — so the key being *present*
+ * is the record that the question was asked. Without that distinction, old maps
+ * would keep their banners forever, or every iconless site would be refetched
+ * on every load.
+ */
+export function previewNeedsFetch(node: CanvasNode): boolean {
+  if (node.type !== "link") return false;
+  const value = (node as Record<string, unknown>)[PREVIEW_KEY];
+  if (!isRecord(value)) return true;
+  return !("icon" in value);
 }
 
 export function isTextNode(node: CanvasNode): node is TextNode & UnknownKeys {

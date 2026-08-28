@@ -8,7 +8,7 @@
 
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
-import { hostOf, normalizeUrl, readMetadata } from "@/lib/bookmark";
+import { hostOf, iconFromManifest, normalizeUrl, readMetadata } from "@/lib/bookmark";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -97,6 +97,28 @@ async function readHead(response: Response): Promise<string> {
   return html;
 }
 
+/**
+ * The icon a page's web app manifest declares.
+ *
+ * A second request, to a URL taken from the page rather than from the user —
+ * which makes it exactly as untrusted as the first, so it goes through the same
+ * guard. Failing is fine: the caller has other places to look.
+ */
+async function manifestIcon(manifestUrl: string): Promise<string | null> {
+  try {
+    const url = new URL(manifestUrl);
+    if (!(await isReachable(url))) return null;
+    const response = await fetch(url, {
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+      headers: { "user-agent": "MindMap/1.0 (+bookmark preview)", accept: "application/json" },
+    });
+    if (!response.ok) return null;
+    return iconFromManifest(await response.json(), url.toString());
+  } catch {
+    return null;
+  }
+}
+
 export async function GET(request: Request) {
   const raw = new URL(request.url).searchParams.get("url") ?? "";
   const normalized = normalizeUrl(raw);
@@ -107,7 +129,17 @@ export async function GET(request: Request) {
   // The card exists either way — the preview is decoration. So a page that
   // refuses, redirects into the weeds, or serves a video answers with the
   // hostname rather than an error, and the card just shows less.
-  const fallback = { url: normalized, title: hostOf(normalized), image: null, site: hostOf(normalized) };
+  // The icon iOS looks for when a page names none. It is a guess, so it is not
+  // checked here — the card falls back by itself if the file is not there,
+  // which costs nothing and saves a request on every site that does have one.
+  const guessedIcon = new URL("/apple-touch-icon.png", normalized).toString();
+  const fallback = {
+    url: normalized,
+    title: hostOf(normalized),
+    site: hostOf(normalized),
+    icon: guessedIcon,
+    image: null,
+  };
 
   let current = new URL(normalized);
   try {
@@ -138,8 +170,10 @@ export async function GET(request: Request) {
       const type = response.headers.get("content-type") ?? "";
       if (!/^(text\/html|application\/xhtml\+xml)/i.test(type)) return Response.json(fallback);
 
-      const meta = readMetadata(await readHead(response), current.toString());
-      return Response.json({ url: normalized, ...meta });
+      const { manifest, ...meta } = readMetadata(await readHead(response), current.toString());
+      const icon =
+        meta.icon ?? (manifest ? await manifestIcon(manifest) : null) ?? guessedIcon;
+      return Response.json({ url: normalized, ...meta, icon });
     }
   } catch {
     // Timeout, DNS failure, refused connection: all the same answer.

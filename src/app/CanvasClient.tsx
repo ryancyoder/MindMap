@@ -21,6 +21,7 @@ import {
   parseCanvas,
   PRESET_COLOR_IDS,
   PREVIEW_KEY,
+  previewNeedsFetch,
   resolveColor,
   serializeCanvas,
   type Canvas,
@@ -1425,8 +1426,9 @@ export default function CanvasClient() {
       const data = (await res.json()) as Partial<LinkPreview>;
       return {
         title: typeof data.title === "string" && data.title ? data.title : hostOf(url),
-        image: typeof data.image === "string" && data.image ? data.image : null,
         site: typeof data.site === "string" && data.site ? data.site : hostOf(url),
+        icon: typeof data.icon === "string" && data.icon ? data.icon : null,
+        image: typeof data.image === "string" && data.image ? data.image : null,
       };
     } catch {
       // Offline, or the route is unreachable. The card still works as a link.
@@ -1553,7 +1555,7 @@ export default function CanvasClient() {
   useEffect(() => {
     const pending: string[] = [];
     for (const node of doc.nodes) {
-      if (node.type !== "link" || linkPreview(node)) continue;
+      if (node.type !== "link" || !previewNeedsFetch(node)) continue;
       if (previewTriedRef.current.has(node.url) || pending.includes(node.url)) continue;
       pending.push(node.url);
       if (pending.length >= PREVIEW_BATCH) break;
@@ -2862,37 +2864,53 @@ export default function CanvasClient() {
                 ) : node.type === "link" ? (
                   <div className={styles.bookmark}>
                     {(() => {
-                      // A bookmark shows one picture. A photo put on the card by
-                      // hand wins over the one the page suggested: it was chosen,
-                      // and the other was only offered.
+                      // What a bookmark shows, in order. A photo put on the card
+                      // by hand wins outright: it was chosen, where everything
+                      // else was only offered. Then the site's own icon, which is
+                      // the point of a bookmark — it says which site this is,
+                      // where a banner says which article. The OpenGraph picture
+                      // is the fallback for a site that declares no icon.
                       const preview = linkPreview(node);
-                      const image =
-                        [picture ? images[picture] : null, preview?.image ?? null].find(
-                          (candidate) => candidate && !brokenImages.has(candidate),
-                        ) ?? null;
+                      const usable = (candidate: string | null | undefined) =>
+                        candidate && !brokenImages.has(candidate) ? candidate : null;
+                      const chosen = usable(picture ? images[picture] : null);
+                      const icon = chosen ? null : usable(preview?.icon);
+                      const banner = chosen ?? (icon ? null : usable(preview?.image));
+                      const art = chosen ?? icon ?? banner;
+                      const broke = () =>
+                        setBrokenImages((broken) => (art ? new Set(broken).add(art) : broken));
                       return (
                         <>
-                          {image ? (
+                          {banner ? (
                             // A plain <img>: next/image wants every host it may
                             // load from declared up front, and the whole point
                             // here is a link to somewhere nobody listed.
                             // eslint-disable-next-line @next/next/no-img-element
                             <img
                               className={styles.bookmarkImage}
-                              src={image}
+                              src={banner}
                               alt=""
                               draggable={false}
-                              onError={() =>
-                                setBrokenImages((broken) => new Set(broken).add(image))
-                              }
+                              onError={broke}
                             />
+                          ) : icon ? (
+                            <span className={styles.bookmarkIconWrap}>
+                              {/* eslint-disable-next-line @next/next/no-img-element */}
+                              <img
+                                className={styles.bookmarkIcon}
+                                src={icon}
+                                alt=""
+                                draggable={false}
+                                onError={broke}
+                              />
+                            </span>
                           ) : (
                             <span className={styles.bookmarkGlyph} aria-hidden>
                               ↗
                             </span>
                           )}
                           <span
-                            className={`${styles.bookmarkLabel} ${image ? "" : styles.bookmarkLabelPlain}`}
+                            className={`${styles.bookmarkLabel} ${banner ? "" : styles.bookmarkLabelPlain}`}
                           >
                             <span className={styles.bookmarkTitle}>
                               {preview?.title || hostOf(node.url)}

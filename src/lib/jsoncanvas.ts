@@ -337,3 +337,42 @@ export function nodeDisplayText(node: CanvasNode): string {
       return node.label ?? "";
   }
 }
+
+/**
+ * A picture on a card.
+ *
+ * The value is the id of an image held outside the document — never the image
+ * itself. Two reasons, and both are load-bearing:
+ *
+ *  - A `.canvas` file is text a person reads and an agent edits. A few hundred
+ *    kilobytes of base64 in the middle of it makes the file unreadable and the
+ *    JSON sheet useless, which is the surface the whole format exists to serve.
+ *  - The cloud library is normalised precisely so one card can be updated
+ *    without rewriting the map. An inline photo would put the biggest value in
+ *    the document into every single one of those rewrites.
+ *
+ * It is an extra key rather than a spec `file` node because a picture has to be
+ * attachable to a card that already says something. One mechanism covers both
+ * "this card is a photo" (a text node with no text yet) and "this card has a
+ * photo on it", and a caption keeps working either way. A `file` node would
+ * also be a lie: it names a path that is not on disk anywhere.
+ *
+ * The key rides on the node, so it survives everything the parser survives —
+ * a round trip through Obsidian, a fold into a sub-map, an unfold that renames
+ * every id.
+ */
+export const IMAGE_KEY = "x-mindmap-image";
+
+/** The image a node carries, if it carries one. */
+export function imageKey(node: CanvasNode): string | null {
+  const value = (node as Record<string, unknown>)[IMAGE_KEY];
+  return typeof value === "string" && value ? value : null;
+}
+
+/** Put a picture on a node, or take it off. Never mutates the node given. */
+export function withImage(node: CanvasNode, key: string | null): CanvasNode {
+  const next = { ...node } as Record<string, unknown>;
+  if (key) next[IMAGE_KEY] = key;
+  else delete next[IMAGE_KEY];
+  return next as CanvasNode;
+}

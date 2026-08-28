@@ -84,3 +84,41 @@ export async function deleteCloudCanvas(id: string): Promise<CloudResult<true>> 
   });
   return res.ok ? { ok: true, value: true } : res;
 }
+
+/**
+ * Pictures travel beside the map rather than inside it, because that is how
+ * they are stored: the document holds an image id, and the bytes live in a row
+ * of their own. Pushing a map therefore pushes two things, and pulling one
+ * pulls two.
+ */
+export type CloudImage = { key: string; dataUrl: string };
+
+export async function listCloudImages(canvasId: string): Promise<CloudResult<CloudImage[]>> {
+  const res = await call<{ images: CloudImage[] }>(
+    `/api/canvases/${encodeURIComponent(canvasId)}/images`,
+  );
+  return res.ok ? { ok: true, value: res.value.images ?? [] } : res;
+}
+
+/** Just the ids, so a push can skip what the cloud already holds. */
+export async function listCloudImageKeys(canvasId: string): Promise<CloudResult<string[]>> {
+  const res = await call<{ keys: string[] }>(
+    `/api/canvases/${encodeURIComponent(canvasId)}/images?keys=1`,
+  );
+  return res.ok ? { ok: true, value: res.value.keys ?? [] } : res;
+}
+
+export async function pushCloudImages(
+  canvasId: string,
+  images: CloudImage[],
+): Promise<CloudResult<number>> {
+  const res = await call<{ saved: number }>(
+    `/api/canvases/${encodeURIComponent(canvasId)}/images`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ images }),
+    },
+  );
+  return res.ok ? { ok: true, value: res.value.saved ?? 0 } : res;
+}

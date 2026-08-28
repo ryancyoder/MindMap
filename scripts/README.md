@@ -28,6 +28,7 @@ node scripts/verify-nesting.mjs           # folding a branch into its own map
 node scripts/verify-jump.mjs              # the Cmd-K jump palette
 node scripts/verify-tilt.mjs              # tilt-to-pan maths and interaction
 node scripts/verify-cloud.mjs             # cloud library (skips if unconfigured)
+node scripts/verify-images.mjs            # pictures on cards
 node scripts/verify-roundtrip.mjs         # .canvas fidelity
 ```
 
@@ -116,6 +117,12 @@ copies nothing, and only a press followed by movement duplicates. Its careful
 case is copying a connected pair, where the edge between the copies has to come
 along and no edge may straddle a copy and an original.
 
+It also holds the checks that only matter once pictures and bookmarks are in
+the same app: that a photo put on a bookmark card replaces the fetched picture
+rather than adding a second one, and that a paste carrying both a picture and
+its address — which is what copying from a web page gives you — leaves one card
+behind rather than one of each.
+
 `verify-bookmark.mjs` covers link cards in two halves. The card is checked in
 the browser with the preview route stubbed, because a suite that fetches a real
 website fails on the day that website is slow rather than on the day this code
@@ -180,6 +187,22 @@ The lesson generalizes four times over: when a check drives the app through a
 different input path than the user does, feeds it idealized input the user
 cannot produce, or renders it at a size the user never holds, a green suite
 says nothing about the user's experience.
+
+`verify-images.mjs` covers pictures, and its first assertion is about its own
+input: it generates a JPEG at 3024x4032 and checks the file really is megabytes
+before checking what became of it. A 1x1 test pixel would satisfy every other
+line in the file while proving nothing about the resize that keeps a map's rows
+a sane size — which is the same mistake the perfect-circle strokes made.
+
+Its other load-bearing check looks at the document rather than the screen: the
+persisted `.canvas` must contain no image data at all. A picture is stored beside
+the map precisely so the file stays readable text, and a regression that inlined
+it would look perfect in the browser.
+
+The rest is the two ways in and the ways a card can move: a picture onto a card
+keeps that card's words, folding and unfolding keep it attached through renamed
+ids, and taking it off is one undo away — with the blob still on the device, so
+undo restores the picture and not just the reference to it.
 
 None of these cover palm rejection or pressure, which need real touch and pen
 hardware — test those on an iPad by hand.

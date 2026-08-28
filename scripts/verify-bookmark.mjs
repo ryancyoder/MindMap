@@ -206,6 +206,79 @@ await page.waitForTimeout(350);
 const moved = await topmost();
 check("a bookmark card still drags", [moved.x - before.x, moved.y - before.y], [80, 40]);
 
+// ── where bookmarks meet pictures ──────────────────────────────────────────
+//
+// Both features put a picture on a card and both answer a paste, so these are
+// the two places the merge could go wrong without either suite noticing.
+
+/** A JPEG, made in the page, of the sort a camera or a screenshot produces. */
+const makePhoto = () =>
+  page.evaluate(() => {
+    const canvas = document.createElement("canvas");
+    canvas.width = 600;
+    canvas.height = 400;
+    const ctx = canvas.getContext("2d");
+    ctx.fillStyle = "#7a1f1f";
+    ctx.fillRect(0, 0, 600, 400);
+    for (let i = 0; i < 400; i++) {
+      ctx.fillStyle = `hsl(${(i * 37) % 360} 60% ${30 + (i % 50)}%)`;
+      ctx.fillRect((i * 97) % 600, (i * 211) % 400, 30, 30);
+    }
+    return canvas.toDataURL("image/jpeg", 0.9).split(",")[1];
+  });
+
+const photo = await makePhoto();
+
+// A photo put on a bookmark card is the one that shows: it was chosen, where
+// the fetched one was only offered.
+await page.locator("[data-node-id]").last().click();
+await page.waitForTimeout(250);
+const [chooser] = await Promise.all([
+  page.waitForEvent("filechooser"),
+  page.getByRole("button", { name: "Photo", exact: true }).click(),
+]);
+await chooser.setFiles({ name: "chosen.jpg", mimeType: "image/jpeg", buffer: Buffer.from(photo, "base64") });
+await page.waitForTimeout(1800);
+
+check("a photo on a bookmark card makes no second card", (await nodes()).length, 2);
+const shown = await page.evaluate(() => {
+  const cards = [...document.querySelectorAll("[data-node-id]")];
+  const card = cards[cards.length - 1];
+  return {
+    images: card.querySelectorAll("img").length,
+    chosen: (card.querySelector("img")?.getAttribute("src") ?? "").startsWith("data:"),
+    stillABookmark: !!card.querySelector('[class*="bookmarkTitle"]'),
+  };
+});
+check("the card shows one picture, not two", shown.images, 1);
+check("and it is the one that was chosen", shown.chosen, true);
+check("the card is still a bookmark", shown.stillABookmark, true);
+
+// A copy made from a web page carries the picture *and* its address. One paste
+// must leave one card behind, not one of each. Nothing selected, so the picture
+// makes a card of its own rather than landing on the card that was.
+await page.keyboard.press("Escape");
+await page.waitForTimeout(250);
+const beforeBoth = (await nodes()).length;
+await page.evaluate((b64) => {
+  const binary = atob(b64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  const data = new DataTransfer();
+  data.items.add(new File([bytes], "copied.jpg", { type: "image/jpeg" }));
+  data.setData("text/plain", "https://example.net/an-article");
+  window.dispatchEvent(new ClipboardEvent("paste", { clipboardData: data, bubbles: true, cancelable: true }));
+}, photo);
+await page.waitForTimeout(1800);
+check("a paste carrying both a picture and a link makes one card", (await nodes()).length - beforeBoth, 1);
+
+const both = await readPersistedCanvas(page);
+check(
+  "and the picture is what it made",
+  both.nodes.filter((n) => n.url === "https://example.net/an-article").length,
+  0,
+);
+
 check("no page errors", errors, []);
 
 await browser.close();

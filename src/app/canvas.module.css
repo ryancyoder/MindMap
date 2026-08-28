@@ -110,6 +110,58 @@
   user-select: text;
 }
 
+/* ─── PICTURES ON CARDS ───────────────────────────────────────────────────
+   The picture sits under whatever the card says and takes the room that is
+   left, bleeding to the border rather than floating inside the padding — a
+   photo with a margin reads as an attachment, not as the card itself. */
+.imageNode {
+  flex-direction: column;
+  align-items: stretch;
+  padding: 0;
+}
+
+/* Words keep the card's own padding, so measureTextHeight in CanvasClient.tsx
+   still measures the width the text actually wraps at. */
+.imageNode .nodeText,
+.imageNode .groupLabel,
+.imageNode .nodeEditor {
+  flex: 0 0 auto;
+  width: auto;
+  padding: 10px 12px 6px;
+}
+
+/* The editor is height:100% for a plain card, which would push the picture out
+   of a card being captioned. Here it takes only what it needs. */
+.imageNode .nodeEditor {
+  height: auto;
+  min-height: 2.6em;
+}
+
+.nodeImage {
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  display: block;
+  object-fit: cover;
+  /* The card owns the pointer. Without this the image is the event target on a
+     drag, and a desktop browser starts its own image-drag on top of ours. */
+  pointer-events: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.nodeImageMissing {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 10px 12px;
+  background: var(--accent-soft);
+  color: var(--text-muted);
+  font-size: 12px;
+  text-align: center;
+}
+
 /* A group is a container, not a card: it sits behind its contents, so it is
    drawn as a tinted region with the label pinned to the top edge rather than a
    filled box that would hide the nodes inside it. */

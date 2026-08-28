@@ -11,6 +11,7 @@ import {
 } from "@/lib/geometry";
 import {
   emptyCanvas,
+  imageKey,
   makeId,
   isCanvasFile,
   linkPreview,
@@ -25,6 +26,7 @@ import {
   type Canvas,
   type CanvasEdge,
   type CanvasNode,
+  withImage,
   type LinkNode,
   type LinkPreview,
   type Side,
@@ -33,6 +35,7 @@ import {
 import { hostOf, normalizeUrl } from "@/lib/bookmark";
 import { duplicateNodes } from "@/lib/duplicate";
 import { nodeAt, nodeRect, recognize, RECOGNIZER } from "@/lib/recognize";
+import { imageFromTransfer, readImageFile, transferHasImage } from "@/lib/images";
 import { edgeCurve, rectsOverlap, snap } from "@/lib/geometry";
 import {
   loadCalibration,
@@ -57,9 +60,11 @@ import {
 import {
   deleteCanvas,
   getCanvas,
+  getImage,
   listCanvases,
   newRecord,
   putCanvas,
+  putImage,
   recallLastOpened,
   rememberLastOpened,
   type CanvasRecord,
@@ -69,8 +74,11 @@ import { rank } from "@/lib/search";
 import {
   deleteCloudCanvas,
   listCloudCanvases,
+  listCloudImageKeys,
+  listCloudImages,
   pullCanvas,
   pushCanvas,
+  pushCloudImages,
   type CloudCanvas,
 } from "@/lib/cloud";
 import styles from "./canvas.module.css";
@@ -105,6 +113,20 @@ const CARD_BORDER = 1.5;
 
 /** Nothing may be resized smaller than this and stay usable. */
 const MIN_CARD = { width: 90, height: 48 };
+
+/** A card made from a photo. Height comes from the picture's own proportions. */
+const PHOTO_CARD_WIDTH = 260;
+const PHOTO_CARD_MIN_HEIGHT = 120;
+const PHOTO_CARD_MAX_HEIGHT = 420;
+
+/**
+ * How much room a picture is given on a card that already had something to
+ * say. Enough to recognise what the photo is of without burying the words.
+ */
+const PHOTO_BAND = 170;
+
+/** A picture never gets squeezed below this, however long the text grows. */
+const PHOTO_BAND_MIN = 110;
 
 /** Two taps closer together than this, and nearer than DOUBLE_TAP_PX, pair up. */
 const DOUBLE_TAP_MS = 320;
@@ -188,6 +210,11 @@ export default function CanvasClient() {
   const [jumpIndex, setJumpIndex] = useState(0);
   /** Search cards in every map, not just the one open. */
   const [jumpEverywhere, setJumpEverywhere] = useState(false);
+  // Pictures for the cards on screen, by image id. The document only ever
+  // holds the id; the bytes are fetched out of the local store on demand.
+  const [images, setImages] = useState<Record<string, string>>({});
+
+  const imagesRef = useRef<Record<string, string>>({});
 
   const surfaceRef = useRef<HTMLDivElement>(null);
   const inkRef = useRef<HTMLCanvasElement>(null);
@@ -281,6 +308,7 @@ export default function CanvasClient() {
     selectedIdsRef.current = selectedIds;
     snapRef.current = snapToGrid;
     penModeRef.current = penMode;
+    imagesRef.current = images;
   });
 
   const selectOnly = useCallback((id: string | null) => {
@@ -659,7 +687,9 @@ export default function CanvasClient() {
     // Grow the card to fit what was written. Growing only, never shrinking, so
     // a card you deliberately made bigger stays that way.
     const needed = measureTextHeight(trimmed, node.width);
-    const height = Math.max(node.height, needed);
+    // Words and a picture share the card, and the words are the ones that
+    // grow — so the floor rises with them rather than squeezing the photo out.
+    const height = Math.max(node.height, imageKey(node) ? needed + PHOTO_BAND_MIN : needed);
 
     const nodes = current.nodes.map((n) =>
       n.id === id ? ({ ...n, text: trimmed, height } as CanvasNode) : n,
@@ -1430,7 +1460,7 @@ export default function CanvasClient() {
     [applyPreview, fetchPreviewData],
   );
 
-  /** Where a new card should land when nothing pointed at a spot. */
+  /** Where a card lands when nothing said where — a link, or a picture. */
   const viewCentre = useCallback(() => {
     const surface = surfaceRef.current;
     const rect = surface?.getBoundingClientRect();
@@ -1439,6 +1469,38 @@ export default function CanvasClient() {
       (rect?.top ?? 0) + (rect?.height ?? window.innerHeight) / 2,
     );
   }, [toWorld]);
+
+  /**
+   * Somewhere to put a card nobody aimed.
+   *
+   * Anything added from the middle of the view lands where the last one did —
+   * paste a link and then a picture and the second buries the first — so this
+   * takes the first free slot on a grid stepping right and down from the
+   * centre. A handful of pasted things lays out as a contact sheet.
+   *
+   * A card that *was* aimed does not come through here: a picture dropped at a
+   * point belongs at that point, and the drop is the answer.
+   */
+  const freeSlot = useCallback(
+    (width: number, height: number) => {
+      const centre = viewCentre();
+      const home = {
+        x: gridSnap(centre.x - width / 2),
+        y: gridSnap(centre.y - height / 2),
+      };
+      let spot = home;
+      for (let slot = 0; slot < 64; slot++) {
+        spot = {
+          x: gridSnap(home.x + (slot % 4) * (width + GRID)),
+          y: gridSnap(home.y + Math.floor(slot / 4) * (height + GRID)),
+        };
+        const rect = { ...spot, width, height };
+        if (!docRef.current.nodes.some((n) => rectsOverlap(rect, nodeRect(n)))) break;
+      }
+      return spot;
+    },
+    [gridSnap, viewCentre],
+  );
 
   /**
    * Make a card for a link. The card appears immediately and the picture
@@ -1453,30 +1515,15 @@ export default function CanvasClient() {
         return null;
       }
       const current = docRef.current;
-      const spot = at ?? viewCentre();
-      // Paste a run of links and they all aim at the middle of the view, so
-      // later ones would bury the earlier ones. Take the first free slot on a
-      // grid instead, which lays a handful of bookmarks out as a contact sheet
-      // rather than a pile.
-      const step = BOOKMARK_CARD + GRID;
-      const home = {
-        x: gridSnap(spot.x - BOOKMARK_CARD / 2),
-        y: gridSnap(spot.y - BOOKMARK_CARD / 2),
-      };
-      let x = home.x;
-      let y = home.y;
-      for (let slot = 0; slot < 64; slot++) {
-        x = gridSnap(home.x + (slot % 4) * step);
-        y = gridSnap(home.y + Math.floor(slot / 4) * step);
-        const rect = { x, y, width: BOOKMARK_CARD, height: BOOKMARK_CARD };
-        if (!current.nodes.some((n) => rectsOverlap(rect, nodeRect(n)))) break;
-      }
+      const spot = at
+        ? { x: gridSnap(at.x - BOOKMARK_CARD / 2), y: gridSnap(at.y - BOOKMARK_CARD / 2) }
+        : freeSlot(BOOKMARK_CARD, BOOKMARK_CARD);
       const node: LinkNode = {
         id: makeId(),
         type: "link",
         url,
-        x,
-        y,
+        x: spot.x,
+        y: spot.y,
         width: BOOKMARK_CARD,
         height: BOOKMARK_CARD,
       };
@@ -1486,7 +1533,7 @@ export default function CanvasClient() {
       void loadPreview(url);
       return node.id;
     },
-    [applyDoc, gridSnap, loadPreview, selectOnly, showToast, viewCentre],
+    [applyDoc, freeSlot, gridSnap, loadPreview, selectOnly, showToast],
   );
 
   /** Ask again for a link whose preview is missing or out of date. */
@@ -1523,26 +1570,6 @@ export default function CanvasClient() {
       live = false;
     };
   }, [applyPreview, doc, fetchPreviewData]);
-
-  // Paste a link onto the canvas and it becomes a card. Anything else pasted
-  // is left alone, and a real field — a card being written into, the JSON
-  // sheet, the link box — always keeps its own paste.
-  useEffect(() => {
-    const onPaste = (e: ClipboardEvent) => {
-      if (editingIdRef.current) return;
-      // Whichever field has focus owns its own paste. Asking the document
-      // rather than the event's target matters: a paste with nothing focused
-      // is delivered against the window, which is not an element at all.
-      const active = document.activeElement;
-      if (active?.closest("input, textarea, [contenteditable]")) return;
-      const text = e.clipboardData?.getData("text/plain") ?? "";
-      if (!normalizeUrl(text)) return;
-      e.preventDefault();
-      addBookmark(text);
-    };
-    window.addEventListener("paste", onPaste);
-    return () => window.removeEventListener("paste", onPaste);
-  }, [addBookmark]);
 
   const setSelectedColor = useCallback(
     (color: string | null) => {
@@ -1870,6 +1897,211 @@ export default function CanvasClient() {
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }, [record]);
 
+  // ─── PICTURES ─────────────────────────────────────────────────────────────
+  //
+  // A card holds an image id, never the picture itself — see IMAGE_KEY in
+  // lib/jsoncanvas.ts for why. So the bytes are looked up here, once per id,
+  // and a card whose picture is missing says so rather than rendering a broken
+  // frame: a map can perfectly well arrive from another device as JSON, with
+  // the photos left behind.
+  const photoInputRef = useRef<HTMLInputElement>(null);
+  const photoTargetRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    const wanted = new Set<string>();
+    for (const node of doc.nodes) {
+      const key = imageKey(node);
+      if (key && !(key in imagesRef.current)) wanted.add(key);
+    }
+    if (wanted.size === 0) return;
+
+    (async () => {
+      const found: Record<string, string> = {};
+      for (const key of wanted) {
+        try {
+          const stored = await getImage(key);
+          if (stored) found[key] = stored.dataUrl;
+        } catch {
+          // A blocked IndexedDB costs the picture, not the map.
+        }
+      }
+      if (cancelled || Object.keys(found).length === 0) return;
+      setImages((prev) => ({ ...prev, ...found }));
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [doc.nodes]);
+
+  /**
+   * Put a picture on the map. One path for every source — the camera, the photo
+   * library, a paste, a drop — because where it came from should not change
+   * what happens to it.
+   *
+   * Naming a card attaches to that card; naming nowhere seeds a new one. Those
+   * are the two things asked for, and they are the same operation with a
+   * different destination.
+   */
+  const placeImage = useCallback(
+    async (file: File, opts: { nodeId?: string | null; world?: { x: number; y: number } } = {}) => {
+      if (!file.type.startsWith("image/")) {
+        showToast("That isn't a picture.");
+        return;
+      }
+
+      let captured;
+      try {
+        captured = await readImageFile(file);
+      } catch (err) {
+        showToast(err instanceof Error ? err.message : "Couldn't read that picture.");
+        return;
+      }
+
+      const key = makeId();
+      try {
+        await putImage(key, captured.dataUrl);
+      } catch {
+        showToast("Couldn't keep that picture on this device.");
+        return;
+      }
+      setImages((prev) => ({ ...prev, [key]: captured.dataUrl }));
+
+      const current = docRef.current;
+      const targetId = opts.nodeId ?? null;
+
+      if (targetId) {
+        const node = current.nodes.find((n) => n.id === targetId);
+        if (!node) return;
+        // Make room below whatever the card already says, rather than putting
+        // the picture on top of it.
+        const said = node.type === "text" && node.text ? measureTextHeight(node.text, node.width) : 0;
+        const height = Math.max(node.height, said + PHOTO_BAND);
+        applyDoc({
+          ...current,
+          nodes: current.nodes.map((n) => (n.id === targetId ? withImage({ ...n, height }, key) : n)),
+        });
+        setSelectedIds([targetId]);
+        showToast(imageKey(node) ? "Picture replaced." : "Picture added to the card.");
+        return;
+      }
+
+      // A card of its own, shaped like the photo it was made from.
+      const width = PHOTO_CARD_WIDTH;
+      const height = clamp(
+        Math.round((width * captured.height) / captured.width),
+        PHOTO_CARD_MIN_HEIGHT,
+        PHOTO_CARD_MAX_HEIGHT,
+      );
+      const spot = opts.world
+        ? { x: gridSnap(opts.world.x - width / 2), y: gridSnap(opts.world.y - height / 2) }
+        : freeSlot(width, height);
+      const node = withImage(
+        {
+          id: makeId(),
+          type: "text",
+          text: "",
+          x: spot.x,
+          y: spot.y,
+          width,
+          height,
+        } as TextNode,
+        key,
+      );
+      applyDoc({ ...current, nodes: [...current.nodes, node] });
+      setSelectedIds([node.id]);
+      showToast("New card from the picture. Tap it again to caption it.");
+    },
+    [applyDoc, freeSlot, gridSnap, showToast],
+  );
+
+  /** Take the picture off a card, leaving the card and whatever it says. */
+  const removeImage = useCallback(() => {
+    const id = selectedIds[0];
+    const current = docRef.current;
+    const node = current.nodes.find((n) => n.id === id);
+    if (!node || !imageKey(node)) return;
+    // The blob stays in the local store: undo has to bring the picture back,
+    // not just the reference to it.
+    applyDoc({
+      ...current,
+      nodes: current.nodes.map((n) => (n.id === id ? withImage(n, null) : n)),
+    });
+    showToast("Picture removed.");
+  }, [applyDoc, selectedIds, showToast]);
+
+  /**
+   * The one button. On iPadOS an `image/*` file input opens the native sheet —
+   * Take Photo, Photo Library, Choose File — so the camera needs no control of
+   * its own, and the bottom bar does not grow a second one.
+   */
+  const choosePhoto = useCallback(() => {
+    // A single selected card is what "put this on that" means; anything else
+    // means a card of its own.
+    photoTargetRef.current = selectedIds.length === 1 ? selectedIds[0] : null;
+    photoInputRef.current?.click();
+  }, [selectedIds]);
+
+  /**
+   * Everything the clipboard can put on the map, in one handler and one order.
+   *
+   * A picture wins, because a picture on the clipboard is unambiguous; failing
+   * that, text that parses as a link becomes a bookmark; failing that the paste
+   * is not ours. Two listeners would both fire on a copy made from a web page,
+   * which carries the picture *and* its address, and one paste would leave two
+   * cards behind.
+   *
+   * A picture follows the Photo button's rule — onto the selected card, or onto
+   * the canvas as a card of its own.
+   */
+  useEffect(() => {
+    const onPaste = (e: ClipboardEvent) => {
+      // A sheet, or a card being written into, is a text surface: the paste
+      // belongs to it. Asking the document rather than the event's target
+      // matters, because a paste with nothing focused is delivered against the
+      // window, which is not an element and has nothing to ask.
+      if (editingIdRef.current || pasteOpen || jumpOpen || linkOpen) return;
+      if (document.activeElement?.closest("input, textarea, [contenteditable]")) return;
+
+      const picture = imageFromTransfer(e.clipboardData);
+      if (picture) {
+        e.preventDefault();
+        const ids = selectedIdsRef.current;
+        void placeImage(picture, { nodeId: ids.length === 1 ? ids[0] : null });
+        return;
+      }
+
+      const text = e.clipboardData?.getData("text/plain") ?? "";
+      if (!normalizeUrl(text)) return;
+      e.preventDefault();
+      addBookmark(text);
+    };
+    window.addEventListener("paste", onPaste);
+    return () => window.removeEventListener("paste", onPaste);
+  }, [addBookmark, jumpOpen, linkOpen, pasteOpen, placeImage]);
+
+  const onDragOver = useCallback((e: React.DragEvent<HTMLDivElement>) => {
+    if (!transferHasImage(e.dataTransfer)) return;
+    // Without preventDefault the browser navigates to the dropped file.
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "copy";
+  }, []);
+
+  const onDrop = useCallback(
+    (e: React.DragEvent<HTMLDivElement>) => {
+      const file = imageFromTransfer(e.dataTransfer);
+      if (!file) return;
+      e.preventDefault();
+      // Dropped on a card, it lands on that card; dropped on canvas, it becomes
+      // one — the drop point is the answer, so nothing has to be selected first.
+      const world = toWorld(e.clientX, e.clientY);
+      const hit = nodeAt(docRef.current.nodes, world);
+      void placeImage(file, { nodeId: hit?.id ?? null, world });
+    },
+    [placeImage, toWorld],
+  );
+
   // ─── CANVAS LIBRARY ───────────────────────────────────────────────────────
   //
   // Autosave is debounced, so anything that leaves the current canvas has to
@@ -1964,10 +2196,38 @@ export default function CanvasClient() {
   // stays the working store so the app keeps working on a plane, and pushing is
   // how a map becomes visible to the agents.
 
+  /**
+   * Send up the pictures a map's cards refer to, skipping any the cloud already
+   * has. Runs after the document, because mindmap_save_images clears rows no
+   * card points at and needs the new cards in place to know which those are.
+   *
+   * A failure here is reported but not fatal: the map is up, and a picture that
+   * did not make it is a retry away rather than a lost push.
+   */
+  const pushImagesFor = useCallback(async (doc: Canvas, cloudId: string) => {
+    const keys = [...new Set(doc.nodes.map(imageKey).filter((k): k is string => Boolean(k)))];
+    const known = await listCloudImageKeys(cloudId);
+    const already = new Set(known.ok ? known.value : []);
+
+    const payload: { key: string; dataUrl: string }[] = [];
+    for (const key of keys) {
+      if (already.has(key)) continue;
+      const local = imagesRef.current[key] ?? (await getImage(key))?.dataUrl;
+      if (local) payload.push({ key, dataUrl: local });
+    }
+    // Still call it with nothing to send: that is what clears pictures whose
+    // cards have since been deleted.
+    return pushCloudImages(cloudId, payload);
+  }, []);
+
   const pushCurrent = useCallback(
     async (target: CanvasRecord) => {
       setBusyCloudId(target.id);
       const res = await pushCanvas(target.doc, target.name, target.cloudId ?? null);
+      if (res.ok) {
+        const images = await pushImagesFor(target.doc, res.value);
+        if (!images.ok) showToast(`Map pushed, but its pictures didn't: ${images.error}`);
+      }
       setBusyCloudId(null);
       if (!res.ok) {
         showToast(res.unconfigured ? "Cloud sync isn't set up." : res.error);
@@ -1981,13 +2241,30 @@ export default function CanvasClient() {
       await refreshCloud();
       showToast(`Pushed “${target.name}” to the cloud.`);
     },
-    [record, refreshCloud, refreshLibrary, showToast],
+    [pushImagesFor, record, refreshCloud, refreshLibrary, showToast],
   );
 
   const openFromCloud = useCallback(
     async (item: CloudCanvas) => {
       setBusyCloudId(item.id);
       const res = await pullCanvas(item.id);
+      if (res.ok) {
+        // Pull the pictures too, into the local store the editor reads from —
+        // otherwise the map arrives with every photo showing as missing.
+        const images = await listCloudImages(item.id);
+        if (images.ok) {
+          const fetched: Record<string, string> = {};
+          for (const image of images.value) {
+            try {
+              await putImage(image.key, image.dataUrl);
+              fetched[image.key] = image.dataUrl;
+            } catch {
+              // A picture that will not store still leaves a readable map.
+            }
+          }
+          if (Object.keys(fetched).length) setImages((prev) => ({ ...prev, ...fetched }));
+        }
+      }
       setBusyCloudId(null);
       if (!res.ok) {
         showToast(res.error);
@@ -2490,6 +2767,8 @@ export default function CanvasClient() {
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerCancel}
         onWheel={onWheel}
+        onDragOver={onDragOver}
+        onDrop={onDrop}
       >
         <div
           className={styles.world}
@@ -2527,6 +2806,8 @@ export default function CanvasClient() {
           {doc.nodes.map((node) => {
             const accent = resolveColor(node.color);
             const isEditing = editingId === node.id;
+            const picture = imageKey(node);
+            const said = nodeDisplayText(node);
             return (
               <div
                 key={node.id}
@@ -2534,7 +2815,7 @@ export default function CanvasClient() {
                 className={[
                   styles.node,
                   node.type === "group" ? styles.groupNode : "",
-                  node.type === "link" ? styles.linkNode : "",
+                  node.type === "link" ? styles.linkNode : picture ? styles.imageNode : "",
                   isCanvasFile(node) ? styles.doorwayNode : "",
                   selectedIds.includes(node.id) ? styles.nodeSelected : "",
                 ]
@@ -2581,10 +2862,14 @@ export default function CanvasClient() {
                 ) : node.type === "link" ? (
                   <div className={styles.bookmark}>
                     {(() => {
+                      // A bookmark shows one picture. A photo put on the card by
+                      // hand wins over the one the page suggested: it was chosen,
+                      // and the other was only offered.
                       const preview = linkPreview(node);
-                      const image = preview?.image && !brokenImages.has(preview.image)
-                        ? preview.image
-                        : null;
+                      const image =
+                        [picture ? images[picture] : null, preview?.image ?? null].find(
+                          (candidate) => candidate && !brokenImages.has(candidate),
+                        ) ?? null;
                       return (
                         <>
                           {image ? (
@@ -2630,14 +2915,32 @@ export default function CanvasClient() {
                       Open ↗
                     </a>
                   </div>
-                ) : (
+                ) : picture && !said ? null : (
+                  // A card that is only a picture says nothing, and "Empty" over
+                  // a photograph would be a lie.
                   <div className={node.type === "group" ? styles.groupLabel : styles.nodeText}>
-                    {nodeDisplayText(node) ||
+                    {said ||
                       (node.type === "group" ? null : (
                         <span className={styles.nodePlaceholder}>Empty</span>
                       ))}
                   </div>
                 )}
+                {picture && node.type !== "link" ? (
+                  images[picture] ? (
+                    // next/image exists to fetch and optimize a remote file.
+                    // This is a data URL already sized by lib/images.ts, so the
+                    // loader would have nothing to do and could not run offline.
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img
+                      className={styles.nodeImage}
+                      src={images[picture]}
+                      alt={said || "Picture on this card"}
+                      draggable={false}
+                    />
+                  ) : (
+                    <span className={styles.nodeImageMissing}>Picture not on this device</span>
+                  )
+                ) : null}
               </div>
             );
           })}
@@ -2722,6 +3025,29 @@ export default function CanvasClient() {
             Redo
           </button>
           <span className={styles.spacer} />
+          <button
+            className={styles.button}
+            onClick={choosePhoto}
+            title={
+              selectedIds.length === 1
+                ? "Put a picture on the selected card"
+                : "Make a card from a picture — camera, library, or a file"
+            }
+          >
+            Photo
+          </button>
+          <input
+            ref={photoInputRef}
+            type="file"
+            accept="image/*"
+            className={styles.hiddenInput}
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (file) void placeImage(file, { nodeId: photoTargetRef.current });
+              // Clearing lets the same picture be chosen twice in a row.
+              e.target.value = "";
+            }}
+          />
           <button
             className={`${styles.button} ${penMode === "select" ? styles.buttonOn : ""}`}
             onClick={togglePenMode}
@@ -2816,6 +3142,15 @@ export default function CanvasClient() {
                 >
                   Fold
                 </button>
+                {imageKey(selectedNodes[0]) ? (
+                  <button
+                    className={styles.button}
+                    onClick={removeImage}
+                    title="Take the picture off, keep the card"
+                  >
+                    No photo
+                  </button>
+                ) : null}
               </>
             ) : (
               <>
@@ -2874,6 +3209,9 @@ export default function CanvasClient() {
             </li>
             <li>
               <b>Scribble</b> over anything → delete it
+            </li>
+            <li>
+              <b>Photo</b> below, or drop one in → a card made from a picture
             </li>
             <li>
               <b>One finger</b> pans, <b>two</b> zoom. The pen never pans.

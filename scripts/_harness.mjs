@@ -70,7 +70,7 @@ export function makeChecker() {
 /** Read the most recently updated canvas out of the app's IndexedDB. */
 export async function readPersistedCanvas(page) {
   return page.evaluate(async () => {
-    const req = indexedDB.open("MindMapDB", 1);
+    const req = indexedDB.open("MindMapDB");
     const db = await new Promise((resolve, reject) => {
       req.onsuccess = () => resolve(req.result);
       req.onerror = () => reject(req.error);

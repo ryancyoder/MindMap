@@ -20,6 +20,7 @@ node scripts/verify-doubletap.mjs         # double-tap to zoom
 node scripts/verify-multitouch.mjs        # two/three-finger undo and redo
 node scripts/verify-multiselect.mjs       # multi-select, align, bulk move
 node scripts/verify-copy.mjs              # long-press to copy a card
+node scripts/verify-bookmark.mjs          # pasting a link, and the route that fetches it
 node scripts/verify-arrange.mjs           # snap, edge alignment, pen select mode
 node scripts/verify-layout.mjs            # chrome layout at real device sizes
 node scripts/verify-edges.mjs             # deleting a connection
@@ -114,6 +115,15 @@ drag still moves, a long press that goes nowhere still extends the selection and
 copies nothing, and only a press followed by movement duplicates. Its careful
 case is copying a connected pair, where the edge between the copies has to come
 along and no edge may straddle a copy and an original.
+
+`verify-bookmark.mjs` covers link cards in two halves. The card is checked in
+the browser with the preview route stubbed, because a suite that fetches a real
+website fails on the day that website is slow rather than on the day this code
+is wrong. The route's own checks are the refusals, and they are the ones that
+matter: it takes a URL from the user and asks the network for it, from a server
+sitting next to a service-role key, so loopback, the private ranges, the
+link-local block cloud providers keep credentials on, and non-web schemes all
+have to come back refused.
 
 `verify-cloud.mjs` drives the cloud library through the app's own routes. It
 needs `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` and **skips cleanly** when

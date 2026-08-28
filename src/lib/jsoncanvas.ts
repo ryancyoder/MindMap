@@ -298,6 +298,28 @@ export function nestedCanvasName(node: CanvasNode): string {
   return base.replace(/\.canvas$/i, "");
 }
 
+/**
+ * What a link card knows about the page it points at. A `link` node in the
+ * spec carries only a url, so the fetched title and preview image ride along
+ * in an extra key — the same trick the nested-map id uses, and for the same
+ * reason: it survives a round trip, and anything else reading the file still
+ * sees an ordinary link node rather than something invented.
+ */
+export const PREVIEW_KEY = "x-mindmap-preview";
+
+export type LinkPreview = { title: string; image: string | null; site: string };
+
+/** The preview cached on a node, if it has been fetched and looks sane. */
+export function linkPreview(node: CanvasNode): LinkPreview | null {
+  const value = (node as Record<string, unknown>)[PREVIEW_KEY];
+  if (!isRecord(value)) return null;
+  const title = typeof value.title === "string" ? value.title : "";
+  const site = typeof value.site === "string" ? value.site : "";
+  const image = typeof value.image === "string" && value.image ? value.image : null;
+  if (!title && !site && !image) return null;
+  return { title, image, site };
+}
+
 export function isTextNode(node: CanvasNode): node is TextNode & UnknownKeys {
   return node.type === "text";
 }

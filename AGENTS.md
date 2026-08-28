@@ -293,6 +293,45 @@ rather than estimating, because wrapping depends on the actual font.
 the card's padding or border in CSS, change them here too** — they were 3px
 apart once and that was enough to clip a whole wrapped line on a narrow card.
 
+## Links
+
+Paste a link onto the canvas and it becomes a square card showing the page's
+own picture. There is also a **Link** button, because pasting needs a keyboard
+and this is an iPad app first; the button opens a field, which is somewhere
+iPadOS will offer Paste.
+
+The card is a spec `link` node — nothing invented — and the fetched title,
+image and site name ride alongside in `PREVIEW_KEY`, an extra key that survives
+a round trip. Obsidian and anything else still see an ordinary link node.
+
+**The card appears immediately and the picture arrives when it arrives.** A
+bookmark that waited on a stranger's server before showing up would feel broken
+every time that server was slow. The preview lands with `setDoc` rather than
+`applyDoc`, because a picture the network went and found is not an edit the
+user made — undoing the card that was just added should remove the card, not
+peel the picture off it. It is matched onto cards by **url, not id**, so a card
+copied while the request was in flight gets the picture too.
+
+Reading another site's OpenGraph tags is a cross-origin request no browser will
+make, so `/api/bookmark` does it server-side. That route takes a URL from
+whoever is holding the iPad and asks the network for it, which is why most of
+it is about where it refuses to go: http(s) only, hostnames resolved and judged
+before the fetch, loopback and the private and link-local ranges rejected, and
+**every redirect hop checked, not just the first** — a redirect to
+`http://127.0.0.1` is the obvious way past a guard that only reads what was
+typed. `verify-bookmark.mjs` asserts those refusals; they are the checks worth
+keeping if the rest of the file changes.
+
+Links that arrive some other way — pasted as JSON, pulled from the cloud,
+written into the file by an agent — fill themselves in too, one attempt per url
+per session so the effect settles instead of looping on its own writes.
+
+Only the small **Open** button carries `data-card-action`. The card body must
+not, or the pointer would go to the browser and a bookmark could never be
+dragged. Cards land on the first free slot of a grid rather than all aiming at
+the middle of the view, so pasting a run of links lays out a contact sheet
+instead of a pile.
+
 ## JSON in and out
 
 `JSON` opens a sheet that pastes a map in or copies the current one out as

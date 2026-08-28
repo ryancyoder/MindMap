@@ -13,19 +13,24 @@ import {
   emptyCanvas,
   makeId,
   isCanvasFile,
+  linkPreview,
   nestedCanvasId,
   nestedCanvasName,
   nodeDisplayText,
   parseCanvas,
   PRESET_COLOR_IDS,
+  PREVIEW_KEY,
   resolveColor,
   serializeCanvas,
   type Canvas,
   type CanvasEdge,
   type CanvasNode,
+  type LinkNode,
+  type LinkPreview,
   type Side,
   type TextNode,
 } from "@/lib/jsoncanvas";
+import { hostOf, normalizeUrl } from "@/lib/bookmark";
 import { duplicateNodes } from "@/lib/duplicate";
 import { nodeAt, nodeRect, recognize, RECOGNIZER } from "@/lib/recognize";
 import { edgeCurve, rectsOverlap, snap } from "@/lib/geometry";
@@ -124,6 +129,13 @@ const ZOOM_ANIM_MS = 260;
 /** Matches the dot grid in canvas.module.css. Change both together. */
 const GRID = 28;
 
+/** A bookmark card is square, so a preview image fills it without cropping to
+ *  a letterbox. Eight grid squares, so it lands on the grid when snap is on. */
+const BOOKMARK_CARD = GRID * 8;
+
+/** How many previews to chase at once when a map arrives full of bare links. */
+const PREVIEW_BATCH = 6;
+
 const MIN_ZOOM = 0.15;
 const MAX_ZOOM = 4;
 
@@ -153,6 +165,10 @@ export default function CanvasClient() {
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [pasteOpen, setPasteOpen] = useState(false);
   const [pasteText, setPasteText] = useState("");
+  const [linkOpen, setLinkOpen] = useState(false);
+  const [linkText, setLinkText] = useState("");
+  /** Preview images that would not load, so the card falls back to its title. */
+  const [brokenImages, setBrokenImages] = useState<Set<string>>(new Set());
   const [copied, setCopied] = useState(false);
   const [cloud, setCloud] = useState<CloudCanvas[]>([]);
   const [cloudState, setCloudState] = useState<"idle" | "loading" | "off" | "error">("idle");
@@ -234,6 +250,8 @@ export default function CanvasClient() {
   const selectedIdsRef = useRef<string[]>([]);
   /** Modifier state captured at pointerdown, since a tap is judged on lift. */
   const gestureShiftRef = useRef(false);
+  /** Links whose preview has already been asked for, so a map is not fetched twice. */
+  const previewTriedRef = useRef<Set<string>>(new Set());
   /** Long-press on a card arms a copy, and for a finger also extends the selection. */
   const longPressRef = useRef<{ pointerId: number; timer: number } | null>(null);
   const longPressFiredRef = useRef(false);
@@ -1362,6 +1380,170 @@ export default function CanvasClient() {
     setEditingId(null);
   }, [applyDoc, selectedIds]);
 
+  // ─── BOOKMARKS ────────────────────────────────────────────────────────────
+
+  /**
+   * Ask the server what a link looks like. Fetching and recording are kept
+   * apart on purpose: this half touches no state, so the effect below can
+   * start it and put the answer away in a callback rather than mid-render.
+   */
+  const fetchPreviewData = useCallback(async (url: string): Promise<LinkPreview | null> => {
+    previewTriedRef.current.add(url);
+    try {
+      const res = await fetch(`/api/bookmark?url=${encodeURIComponent(url)}`);
+      if (!res.ok) return null;
+      const data = (await res.json()) as Partial<LinkPreview>;
+      return {
+        title: typeof data.title === "string" && data.title ? data.title : hostOf(url),
+        image: typeof data.image === "string" && data.image ? data.image : null,
+        site: typeof data.site === "string" && data.site ? data.site : hostOf(url),
+      };
+    } catch {
+      // Offline, or the route is unreachable. The card still works as a link.
+      return null;
+    }
+  }, []);
+
+  /**
+   * Cache a preview on every card pointing at that link.
+   *
+   * It lands with `setDoc` rather than `applyDoc`: a picture the network went
+   * and found is not an edit the user made, and undoing the card that was just
+   * added should remove the card, not peel the picture off it. Matching on the
+   * url rather than an id means a card copied while the request was in flight
+   * gets the picture too.
+   */
+  const applyPreview = useCallback((url: string, preview: LinkPreview) => {
+    setDoc((d) => ({
+      ...d,
+      nodes: d.nodes.map((n) =>
+        n.type === "link" && n.url === url ? ({ ...n, [PREVIEW_KEY]: preview } as CanvasNode) : n,
+      ),
+    }));
+  }, []);
+
+  const loadPreview = useCallback(
+    async (url: string) => {
+      const preview = await fetchPreviewData(url);
+      if (preview) applyPreview(url, preview);
+    },
+    [applyPreview, fetchPreviewData],
+  );
+
+  /** Where a new card should land when nothing pointed at a spot. */
+  const viewCentre = useCallback(() => {
+    const surface = surfaceRef.current;
+    const rect = surface?.getBoundingClientRect();
+    return toWorld(
+      (rect?.left ?? 0) + (rect?.width ?? window.innerWidth) / 2,
+      (rect?.top ?? 0) + (rect?.height ?? window.innerHeight) / 2,
+    );
+  }, [toWorld]);
+
+  /**
+   * Make a card for a link. The card appears immediately and the picture
+   * arrives when it arrives — a bookmark that waited on a stranger's server
+   * before showing up would feel broken every time that server was slow.
+   */
+  const addBookmark = useCallback(
+    (raw: string, at?: { x: number; y: number }) => {
+      const url = normalizeUrl(raw);
+      if (!url) {
+        showToast("That does not look like a link.");
+        return null;
+      }
+      const current = docRef.current;
+      const spot = at ?? viewCentre();
+      // Paste a run of links and they all aim at the middle of the view, so
+      // later ones would bury the earlier ones. Take the first free slot on a
+      // grid instead, which lays a handful of bookmarks out as a contact sheet
+      // rather than a pile.
+      const step = BOOKMARK_CARD + GRID;
+      const home = {
+        x: gridSnap(spot.x - BOOKMARK_CARD / 2),
+        y: gridSnap(spot.y - BOOKMARK_CARD / 2),
+      };
+      let x = home.x;
+      let y = home.y;
+      for (let slot = 0; slot < 64; slot++) {
+        x = gridSnap(home.x + (slot % 4) * step);
+        y = gridSnap(home.y + Math.floor(slot / 4) * step);
+        const rect = { x, y, width: BOOKMARK_CARD, height: BOOKMARK_CARD };
+        if (!current.nodes.some((n) => rectsOverlap(rect, nodeRect(n)))) break;
+      }
+      const node: LinkNode = {
+        id: makeId(),
+        type: "link",
+        url,
+        x,
+        y,
+        width: BOOKMARK_CARD,
+        height: BOOKMARK_CARD,
+      };
+      applyDoc({ ...current, nodes: [...current.nodes, node] });
+      selectOnly(node.id);
+      showToast(hostOf(url));
+      void loadPreview(url);
+      return node.id;
+    },
+    [applyDoc, gridSnap, loadPreview, selectOnly, showToast, viewCentre],
+  );
+
+  /** Ask again for a link whose preview is missing or out of date. */
+  const refreshPreview = useCallback(
+    (node: CanvasNode) => {
+      if (node.type !== "link") return;
+      previewTriedRef.current.delete(node.url);
+      setBrokenImages(new Set());
+      void loadPreview(node.url);
+    },
+    [loadPreview],
+  );
+
+  // Links that arrived some other way — pasted as JSON, pulled from the cloud,
+  // written by an agent — fill themselves in too. Each url is tried once per
+  // session, so this settles rather than looping on its own writes.
+  useEffect(() => {
+    const pending: string[] = [];
+    for (const node of doc.nodes) {
+      if (node.type !== "link" || linkPreview(node)) continue;
+      if (previewTriedRef.current.has(node.url) || pending.includes(node.url)) continue;
+      pending.push(node.url);
+      if (pending.length >= PREVIEW_BATCH) break;
+    }
+    if (pending.length === 0) return;
+
+    let live = true;
+    for (const url of pending) {
+      void fetchPreviewData(url).then((preview) => {
+        if (live && preview) applyPreview(url, preview);
+      });
+    }
+    return () => {
+      live = false;
+    };
+  }, [applyPreview, doc, fetchPreviewData]);
+
+  // Paste a link onto the canvas and it becomes a card. Anything else pasted
+  // is left alone, and a real field — a card being written into, the JSON
+  // sheet, the link box — always keeps its own paste.
+  useEffect(() => {
+    const onPaste = (e: ClipboardEvent) => {
+      if (editingIdRef.current) return;
+      // Whichever field has focus owns its own paste. Asking the document
+      // rather than the event's target matters: a paste with nothing focused
+      // is delivered against the window, which is not an element at all.
+      const active = document.activeElement;
+      if (active?.closest("input, textarea, [contenteditable]")) return;
+      const text = e.clipboardData?.getData("text/plain") ?? "";
+      if (!normalizeUrl(text)) return;
+      e.preventDefault();
+      addBookmark(text);
+    };
+    window.addEventListener("paste", onPaste);
+    return () => window.removeEventListener("paste", onPaste);
+  }, [addBookmark]);
+
   const setSelectedColor = useCallback(
     (color: string | null) => {
       const ids = new Set(selectedIds);
@@ -2291,6 +2473,8 @@ export default function CanvasClient() {
 
   const edgePaths = useMemo(() => buildEdgePaths(doc), [doc]);
   const selectedNodes = doc.nodes.filter((n) => selectedIds.includes(n.id));
+  /** The link the box currently holds, or null while it is not one yet. */
+  const linkCandidate = normalizeUrl(linkText);
 
   return (
     <div className={styles.root}>
@@ -2350,6 +2534,7 @@ export default function CanvasClient() {
                 className={[
                   styles.node,
                   node.type === "group" ? styles.groupNode : "",
+                  node.type === "link" ? styles.linkNode : "",
                   isCanvasFile(node) ? styles.doorwayNode : "",
                   selectedIds.includes(node.id) ? styles.nodeSelected : "",
                 ]
@@ -2393,6 +2578,58 @@ export default function CanvasClient() {
                       Open ↗
                     </button>
                   </div>
+                ) : node.type === "link" ? (
+                  <div className={styles.bookmark}>
+                    {(() => {
+                      const preview = linkPreview(node);
+                      const image = preview?.image && !brokenImages.has(preview.image)
+                        ? preview.image
+                        : null;
+                      return (
+                        <>
+                          {image ? (
+                            // A plain <img>: next/image wants every host it may
+                            // load from declared up front, and the whole point
+                            // here is a link to somewhere nobody listed.
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img
+                              className={styles.bookmarkImage}
+                              src={image}
+                              alt=""
+                              draggable={false}
+                              onError={() =>
+                                setBrokenImages((broken) => new Set(broken).add(image))
+                              }
+                            />
+                          ) : (
+                            <span className={styles.bookmarkGlyph} aria-hidden>
+                              ↗
+                            </span>
+                          )}
+                          <span
+                            className={`${styles.bookmarkLabel} ${image ? "" : styles.bookmarkLabelPlain}`}
+                          >
+                            <span className={styles.bookmarkTitle}>
+                              {preview?.title || hostOf(node.url)}
+                            </span>
+                            <span className={styles.bookmarkSite}>
+                              {preview?.site || hostOf(node.url)}
+                            </span>
+                          </span>
+                        </>
+                      );
+                    })()}
+                    <a
+                      className={styles.bookmarkOpen}
+                      data-card-action="open"
+                      href={node.url}
+                      target="_blank"
+                      rel="noreferrer noopener"
+                      aria-label={`Open ${hostOf(node.url)}`}
+                    >
+                      Open ↗
+                    </a>
+                  </div>
                 ) : (
                   <div className={node.type === "group" ? styles.groupLabel : styles.nodeText}>
                     {nodeDisplayText(node) ||
@@ -2427,6 +2664,9 @@ export default function CanvasClient() {
           </button>
           <button className={styles.button} onClick={() => fileInputRef.current?.click()}>
             Open
+          </button>
+          <button className={styles.button} onClick={() => setLinkOpen(true)}>
+            Link
           </button>
           <button className={styles.button} onClick={() => setPasteOpen(true)}>
             JSON
@@ -2550,6 +2790,14 @@ export default function CanvasClient() {
                   Unfold
                 </button>
               </>
+            ) : selectedNodes.length === 1 && selectedNodes[0].type === "link" ? (
+              <button
+                className={styles.button}
+                onClick={() => refreshPreview(selectedNodes[0])}
+                title="Fetch this link's picture and title again"
+              >
+                Refresh
+              </button>
             ) : selectedNodes.length === 1 ? (
               <>
                 <button
@@ -2748,6 +2996,70 @@ export default function CanvasClient() {
           <span className={styles.tiltStepCount}>
             {tiltStep === "neutral" ? "1" : tiltStep === "right" ? "2" : "3"} of 3
           </span>
+        </div>
+      ) : null}
+
+      {linkOpen ? (
+        <div className={styles.sheetBackdrop} onClick={() => setLinkOpen(false)}>
+          <div
+            className={`${styles.chrome} ${styles.sheet} ${styles.linkSheet}`}
+            onClick={(e) => e.stopPropagation()}
+            role="dialog"
+            aria-label="Add a link"
+          >
+            <header className={styles.sheetHeader}>
+              <h2 className={styles.sheetTitle}>Add a link</h2>
+              <button className={styles.button} onClick={() => setLinkOpen(false)}>
+                Close
+              </button>
+            </header>
+
+            <div className={styles.linkBody}>
+              <input
+                className={styles.linkInput}
+                value={linkText}
+                onChange={(e) => setLinkText(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key !== "Enter" || !linkCandidate) return;
+                  e.preventDefault();
+                  if (addBookmark(linkText)) {
+                    setLinkText("");
+                    setLinkOpen(false);
+                  }
+                }}
+                placeholder="https://…"
+                type="url"
+                inputMode="url"
+                autoFocus
+                spellCheck={false}
+                autoCapitalize="none"
+                autoCorrect="off"
+                aria-label="Link address"
+              />
+              <p className={styles.linkHint}>
+                Makes a square card showing the page&rsquo;s own picture. With a keyboard
+                you can skip this and paste straight onto the canvas.
+              </p>
+            </div>
+
+            <footer className={styles.sheetFooter}>
+              <span className={styles.linkPreviewNote}>
+                {linkCandidate ? hostOf(linkCandidate) : "\u00a0"}
+              </span>
+              <button
+                className={`${styles.button} ${styles.primary}`}
+                disabled={!linkCandidate}
+                onClick={() => {
+                  if (addBookmark(linkText)) {
+                    setLinkText("");
+                    setLinkOpen(false);
+                  }
+                }}
+              >
+                Add card
+              </button>
+            </footer>
+          </div>
         </div>
       ) : null}
 

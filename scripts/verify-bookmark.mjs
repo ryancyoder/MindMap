@@ -232,14 +232,22 @@ check(
 // The icon is the point: a bookmark says which site this is, and a banner says
 // which article. Given both, the icon is what shows.
 check(
-  "and it is the site's icon, laid out like a home-screen tile",
-  await page.locator('img[class*="bookmarkIcon"]').count(),
-  1,
+  "and it is the site's icon, not the OpenGraph banner",
+  await page.locator("[data-node-id] img").getAttribute("src"),
+  `${BASE_URL}/__stub-icon.png`,
 );
+// Filling the card is the whole point of showing an icon rather than a photo.
 check(
-  "not the OpenGraph banner",
-  await page.locator('[class*="bookmarkImage"]').count(),
-  0,
+  "the icon fills the card, edge to edge",
+  await page.evaluate(() => {
+    const card = document.querySelector("[data-node-id]");
+    const img = card.querySelector("img");
+    const a = card.getBoundingClientRect();
+    const b = img.getBoundingClientRect();
+    const fills = Math.abs(a.width - b.width) < 4 && Math.abs(a.height - b.height) < 4;
+    return { fills, fit: getComputedStyle(img).objectFit };
+  }),
+  { fills: true, fit: "cover" },
 );
 check(
   "and its title",
@@ -433,14 +441,53 @@ check(
   "and falls back to its banner",
   await page.evaluate(() => {
     const cards = [...document.querySelectorAll("[data-node-id]")];
-    const card = cards[cards.length - 1];
-    return {
-      banner: card.querySelectorAll('[class*="bookmarkImage"]').length,
-      icon: card.querySelectorAll('img[class*="bookmarkIcon"]').length,
-    };
+    return cards[cards.length - 1].querySelector("img")?.getAttribute("src") ?? null;
   }),
-  { banner: 1, icon: 0 },
+  `${BASE_URL}/__stub.png`,
 );
+
+// ── titles over the icon, which is a setting ───────────────────────────────
+
+const titlesOn = () => page.locator('[class*="bookmarkTitle"]').count();
+check("titles are on to begin with", (await titlesOn()) > 0, true);
+
+await page.getByRole("button", { name: "Settings" }).click();
+await page.waitForTimeout(250);
+const titleSwitch = page.getByRole("switch", { name: "Titles on link cards" });
+check("the setting reads as on", await titleSwitch.innerText(), "On");
+await titleSwitch.click();
+await page.waitForTimeout(250);
+check("turning it off reads as off", await titleSwitch.innerText(), "Off");
+await page.getByRole("button", { name: "Close" }).click();
+await page.waitForTimeout(300);
+
+check("no card writes over its icon any more", await titlesOn(), 0);
+check(
+  "and the icon is still there, filling the card",
+  await page.locator("[data-node-id] img").count() > 0,
+  true,
+);
+check(
+  "the picture carries the name instead, for anything reading the page",
+  (await page.locator("[data-node-id] img").first().getAttribute("alt")) !== "",
+  true,
+);
+
+// A card with no picture has nothing else to say what it is, so it keeps its
+// words whatever the setting says.
+await page.keyboard.press("Escape");
+await page.waitForTimeout(150);
+await page.route("**/api/bookmark**", (route) =>
+  route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({}) }),
+);
+await pasteOnCanvas("https://nothing.example/here");
+await page.waitForTimeout(700);
+check("a link with no picture keeps its words", (await titlesOn()) > 0, true);
+
+// The setting is a preference, so it has to outlive the page.
+await page.reload({ waitUntil: "networkidle" });
+await page.waitForTimeout(900);
+check("and the setting survives a reload", await titlesOn(), 1);
 
 check("no page errors", errors, []);
 

@@ -229,9 +229,10 @@
   touch-action: manipulation;
 }
 
-/* A bookmark: the page's own picture, filling a square card, with the title
-   over it. Full bleed, so the node's own padding is dropped here rather than
-   fought with from the inside. */
+/* A bookmark: the site's own icon filling a square card, edge to edge, the way
+   it fills a home-screen tile — with the title over it if that is turned on.
+   Full bleed, so the node's own padding is dropped here rather than fought with
+   from the inside. */
 .linkNode {
   padding: 0;
   align-items: stretch;
@@ -259,35 +260,6 @@
   user-select: none;
 }
 
-/* The site's own icon, shown the way a home screen shows one: centred on a
-   quiet ground at a size it was drawn for, rather than stretched over the card.
-   The padding keeps it clear of the label below. */
-.bookmarkIconWrap {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding-bottom: 46px;
-  background: color-mix(in srgb, var(--accent-soft) 45%, var(--surface));
-}
-
-.bookmarkIcon {
-  width: 96px;
-  height: 96px;
-  object-fit: contain;
-  /* The shape iOS masks an icon into. Sites ship square art expecting it. */
-  border-radius: 22%;
-  /* Icons are drawn to sit on something opaque; a transparent one on the card's
-     own ground would lose its edges in dark mode. */
-  background: #fff;
-  /* The ring is what keeps a near-white icon — Apple's, and plenty of others —
-     from dissolving into the card it sits on. */
-  box-shadow: 0 6px 18px rgb(0 0 0 / 0.2), inset 0 0 0 1px rgb(0 0 0 / 0.08);
-  -webkit-user-drag: none;
-  user-select: none;
-}
-
 /* No picture, or one that refused to load: the card still has to read as a
    link rather than as an empty box. */
 .bookmarkGlyph {
@@ -306,9 +278,16 @@
   display: flex;
   flex-direction: column;
   gap: 1px;
-  padding: 20px 10px 8px;
-  /* Legible over a photograph of anything, without dimming the whole image. */
-  background: linear-gradient(to top, rgb(0 0 0 / 0.78), rgb(0 0 0 / 0));
+  padding: 30px 10px 8px;
+  /* A scrim, not a fade: plenty of sites ship a white or near-white icon, and
+     white text over the tail of a gentle gradient disappears on them. It stays
+     opaque across the whole height of the text and only fades above it. */
+  background: linear-gradient(
+    to top,
+    rgb(0 0 0 / 0.86) 0%,
+    rgb(0 0 0 / 0.78) 55%,
+    rgb(0 0 0 / 0) 100%
+  );
   color: #fff;
 }
 
@@ -779,6 +758,43 @@
 
 .linkHint {
   margin: 0;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.settingsBody {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 16px 16px;
+}
+
+.settingRow {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 0;
+}
+
+.settingRow + .settingRow {
+  border-top: 1px solid var(--border);
+}
+
+.settingText {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.settingName {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.settingHint {
   color: var(--text-muted);
   font-size: 13px;
   line-height: 1.4;

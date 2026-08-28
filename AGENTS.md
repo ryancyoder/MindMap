@@ -357,11 +357,22 @@ image and site name ride alongside in `PREVIEW_KEY`, an extra key that survives
 a round trip. Obsidian and anything else still see an ordinary link node.
 
 **The icon, not the banner.** A card shows the icon iOS would put on the home
-screen for that link, laid out the same way: centred at the size it was drawn
-for, on a quiet ground, with the title beneath. That is the right picture
-because a bookmark is about a *site* and an OpenGraph banner is about one
-*article* — and a wall of banners reads as noise where a wall of icons reads as
-a shelf. The banner is kept as the fallback for a site that declares no icon.
+screen for that link, filling the card edge to edge the way it fills a
+home-screen tile. That is the right picture because a bookmark is about a *site*
+and an OpenGraph banner is about one *article* — and a wall of banners reads as
+noise where a wall of icons reads as a shelf. The banner is kept as the fallback
+for a site that declares no icon.
+
+**The title is written over the icon, and that is a setting.** `linkTitles`
+(persisted as `mindmap_link_titles`, on unless turned off) decides whether a
+card carries its words; off, a map of bookmarks is a grid of icons. The scrim
+behind the words is deliberately opaque rather than a gentle fade — plenty of
+sites ship a white icon, and white text over the tail of a soft gradient
+disappears on them.
+
+A card with **no** picture keeps its words whatever the setting says, since
+there is nothing else to say what it is. With the words hidden the picture is
+the only thing naming the card, so the title moves to the image's `alt`.
 
 The icon is chosen the way iOS chooses one: `apple-touch-icon` first (its
 declared size is `sizes`, or 180 by convention), then the web app manifest,

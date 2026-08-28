@@ -190,6 +190,9 @@ export default function CanvasClient() {
   const [pasteText, setPasteText] = useState("");
   const [linkOpen, setLinkOpen] = useState(false);
   const [linkText, setLinkText] = useState("");
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  /** Whether a link card writes its title over the icon. On unless turned off. */
+  const [linkTitles, setLinkTitles] = useState(true);
   /** Preview images that would not load, so the card falls back to its title. */
   const [brokenImages, setBrokenImages] = useState<Set<string>>(new Set());
   const [copied, setCopied] = useState(false);
@@ -345,6 +348,7 @@ export default function CanvasClient() {
         setSnapToGrid(localStorage.getItem("mindmap_snap") === "1");
         setPenMode(localStorage.getItem("mindmap_pen_mode") === "select" ? "select" : "draw");
         setJumpEverywhere(localStorage.getItem("mindmap_jump_everywhere") === "1");
+        setLinkTitles(localStorage.getItem("mindmap_link_titles") !== "0");
       } catch {
         // Private browsing can refuse reads; the defaults are fine.
       }
@@ -1837,6 +1841,18 @@ export default function CanvasClient() {
     });
   }, []);
 
+  const toggleLinkTitles = useCallback(() => {
+    setLinkTitles((on) => {
+      const next = !on;
+      try {
+        localStorage.setItem("mindmap_link_titles", next ? "1" : "0");
+      } catch {
+        // Losing the preference is harmless.
+      }
+      return next;
+    });
+  }, []);
+
   const togglePenMode = useCallback(() => {
     setPenMode((mode) => {
       const next = mode === "draw" ? "select" : "draw";
@@ -2873,52 +2889,47 @@ export default function CanvasClient() {
                       const preview = linkPreview(node);
                       const usable = (candidate: string | null | undefined) =>
                         candidate && !brokenImages.has(candidate) ? candidate : null;
-                      const chosen = usable(picture ? images[picture] : null);
-                      const icon = chosen ? null : usable(preview?.icon);
-                      const banner = chosen ?? (icon ? null : usable(preview?.image));
-                      const art = chosen ?? icon ?? banner;
-                      const broke = () =>
-                        setBrokenImages((broken) => (art ? new Set(broken).add(art) : broken));
+                      const art =
+                        usable(picture ? images[picture] : null) ??
+                        usable(preview?.icon) ??
+                        usable(preview?.image);
+                      const title = preview?.title || hostOf(node.url);
+                      // A card with no picture has nothing else to say what it
+                      // is, so it keeps its words whatever the setting says.
+                      const labelled = linkTitles || !art;
                       return (
                         <>
-                          {banner ? (
+                          {art ? (
                             // A plain <img>: next/image wants every host it may
                             // load from declared up front, and the whole point
                             // here is a link to somewhere nobody listed.
                             // eslint-disable-next-line @next/next/no-img-element
                             <img
                               className={styles.bookmarkImage}
-                              src={banner}
-                              alt=""
+                              src={art}
+                              // With the title hidden the picture is the only
+                              // thing naming the card, so it carries the name.
+                              alt={labelled ? "" : title}
                               draggable={false}
-                              onError={broke}
+                              onError={() =>
+                                setBrokenImages((broken) => new Set(broken).add(art))
+                              }
                             />
-                          ) : icon ? (
-                            <span className={styles.bookmarkIconWrap}>
-                              {/* eslint-disable-next-line @next/next/no-img-element */}
-                              <img
-                                className={styles.bookmarkIcon}
-                                src={icon}
-                                alt=""
-                                draggable={false}
-                                onError={broke}
-                              />
-                            </span>
                           ) : (
                             <span className={styles.bookmarkGlyph} aria-hidden>
                               ↗
                             </span>
                           )}
-                          <span
-                            className={`${styles.bookmarkLabel} ${banner ? "" : styles.bookmarkLabelPlain}`}
-                          >
-                            <span className={styles.bookmarkTitle}>
-                              {preview?.title || hostOf(node.url)}
+                          {labelled ? (
+                            <span
+                              className={`${styles.bookmarkLabel} ${art ? "" : styles.bookmarkLabelPlain}`}
+                            >
+                              <span className={styles.bookmarkTitle}>{title}</span>
+                              <span className={styles.bookmarkSite}>
+                                {preview?.site || hostOf(node.url)}
+                              </span>
                             </span>
-                            <span className={styles.bookmarkSite}>
-                              {preview?.site || hostOf(node.url)}
-                            </span>
-                          </span>
+                          ) : null}
                         </>
                       );
                     })()}
@@ -2994,6 +3005,14 @@ export default function CanvasClient() {
           </button>
           <button className={styles.button} onClick={saveFile}>
             Save .canvas
+          </button>
+          <button
+            className={styles.button}
+            onClick={() => setSettingsOpen(true)}
+            title="Settings"
+            aria-label="Settings"
+          >
+            ⚙
           </button>
         </div>
         <input
@@ -3352,6 +3371,45 @@ export default function CanvasClient() {
           <span className={styles.tiltStepCount}>
             {tiltStep === "neutral" ? "1" : tiltStep === "right" ? "2" : "3"} of 3
           </span>
+        </div>
+      ) : null}
+
+      {settingsOpen ? (
+        <div className={styles.sheetBackdrop} onClick={() => setSettingsOpen(false)}>
+          <div
+            className={`${styles.chrome} ${styles.sheet} ${styles.linkSheet}`}
+            onClick={(e) => e.stopPropagation()}
+            role="dialog"
+            aria-label="Settings"
+          >
+            <header className={styles.sheetHeader}>
+              <h2 className={styles.sheetTitle}>Settings</h2>
+              <button className={styles.button} onClick={() => setSettingsOpen(false)}>
+                Close
+              </button>
+            </header>
+
+            <div className={styles.settingsBody}>
+              <div className={styles.settingRow}>
+                <span className={styles.settingText}>
+                  <span className={styles.settingName}>Titles on link cards</span>
+                  <span className={styles.settingHint}>
+                    Turn it off and a bookmark is just its icon, the way it looks on a
+                    home screen. A link with no picture keeps its words either way.
+                  </span>
+                </span>
+                <button
+                  className={`${styles.button} ${linkTitles ? styles.buttonOn : ""}`}
+                  onClick={toggleLinkTitles}
+                  role="switch"
+                  aria-checked={linkTitles}
+                  aria-label="Titles on link cards"
+                >
+                  {linkTitles ? "On" : "Off"}
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
       ) : null}
 

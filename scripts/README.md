@@ -19,6 +19,7 @@ node scripts/verify-paste.mjs             # pasting and copying map JSON
 node scripts/verify-doubletap.mjs         # double-tap to zoom
 node scripts/verify-multitouch.mjs        # two/three-finger undo and redo
 node scripts/verify-multiselect.mjs       # multi-select, align, bulk move
+node scripts/verify-copy.mjs              # long-press to copy a card
 node scripts/verify-arrange.mjs           # snap, edge alignment, pen select mode
 node scripts/verify-layout.mjs            # chrome layout at real device sizes
 node scripts/verify-edges.mjs             # deleting a connection
@@ -106,6 +107,13 @@ app.
 and long-press — and the commands it unlocks. Alignment is checked on centres
 rather than edges, and each command is checked to be a single undo rather than
 one per card.
+
+`verify-copy.mjs` covers long-press-to-copy, which shares a gesture with
+long-press-to-select — so it has to prove the two halves stay separate: a plain
+drag still moves, a long press that goes nowhere still extends the selection and
+copies nothing, and only a press followed by movement duplicates. Its careful
+case is copying a connected pair, where the edge between the copies has to come
+along and no edge may straddle a copy and an original.
 
 `verify-cloud.mjs` drives the cloud library through the app's own routes. It
 needs `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` and **skips cleanly** when

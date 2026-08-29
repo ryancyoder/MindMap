@@ -64,6 +64,16 @@ const circle = async (cx, cy, r) => {
 };
 
 const cards = () => page.locator("[data-node-id]").count();
+const isInking = async () => (await page.locator('[class*="sketchNode"]').count()) > 0;
+
+/** Open the card for writing, if it is not already. The button is a toggle. */
+const ensureInking = async () => {
+  if (await isInking()) return;
+  await page.locator("[data-node-id]").first().click();
+  await page.waitForTimeout(200);
+  await page.getByRole("button", { name: "Ink", exact: true }).click();
+  await page.waitForTimeout(250);
+};
 const inkPaths = () => page.locator('[class*="inkLayer"] path').count();
 const box = async (i) => page.locator("[data-node-id]").nth(i).boundingBox();
 
@@ -124,7 +134,7 @@ check("one undo takes back one stroke, not the whole page", await inkPaths(), 1)
 
 await page.waitForTimeout(800);
 const doc = await readPersistedCanvas(page);
-const inked = doc.nodes[0]["x-mindmap-ink"];
+const inked = doc.nodes[0]["x-mindmap-ink"].strokes;
 check("the ink is saved on the card", Array.isArray(inked) && inked.length, 1);
 check(
   "as whole numbers, the way the spec writes geometry",
@@ -132,8 +142,17 @@ check(
   true,
 );
 check(
-  "and stays inside the card it was written in",
-  inked[0].points.every((n, i) => n >= 0 && n <= (i % 2 ? doc.nodes[0].height : doc.nodes[0].width)),
+  "against a box the size of the card it was written on",
+  [doc.nodes[0]["x-mindmap-ink"].width, doc.nodes[0]["x-mindmap-ink"].height],
+  [doc.nodes[0].width, doc.nodes[0].height],
+);
+check(
+  "and stays inside it",
+  inked[0].points.every(
+    (n, i) =>
+      n >= 0 &&
+      n <= (i % 2 ? doc.nodes[0]["x-mindmap-ink"].height : doc.nodes[0]["x-mindmap-ink"].width),
+  ),
   true,
 );
 check("nothing invented at the top level", Object.keys(doc).sort().join(), "edges,nodes");
@@ -189,7 +208,7 @@ await page.waitForTimeout(800);
 
 check("wandering off the edge does not make a card", await cards(), 1);
 const written = (await readPersistedCanvas(page)).nodes[0];
-const strokes = written["x-mindmap-ink"];
+const strokes = written["x-mindmap-ink"].strokes;
 check("both strokes were kept", strokes.length, 3);
 check(
   "a straight run keeps only its ends",
@@ -197,9 +216,12 @@ check(
   2,
 );
 check(
-  "every point is inside the card it was written in",
+  "every point is inside the box they are drawn against",
   strokes.every((k) =>
-    k.points.every((n, i) => n >= 0 && n <= (i % 2 ? written.height : written.width)),
+    k.points.every(
+      (n, i) =>
+        n >= 0 && n <= (i % 2 ? written["x-mindmap-ink"].height : written["x-mindmap-ink"].width),
+    ),
   ),
   true,
 );
@@ -212,6 +234,103 @@ check(
   "a curve is drawn as a curve, not a hinge at every point",
   (await page.locator('[class*="inkLayer"] path').first().getAttribute("d")).includes("Q"),
   true,
+);
+
+// ── writing stretches with the card ───────────────────────────────────────
+//
+// An annotation belongs to the tile it is on, so resizing the tile resizes the
+// writing — in both axes independently, because a card can change shape as well
+// as size.
+
+const drawnBox = await page.evaluate(() => {
+  const svg = document.querySelector('[class*="inkLayer"]');
+  const card = document.querySelector("[data-node-id]");
+  return {
+    viewBox: svg.getAttribute("viewBox"),
+    svg: [Math.round(svg.width.baseVal.value), Math.round(svg.height.baseVal.value)],
+    card: [parseFloat(card.style.width), parseFloat(card.style.height)],
+    fit: svg.getAttribute("preserveAspectRatio"),
+  };
+});
+check("the writing is drawn at the card's size", drawnBox.svg, drawnBox.card);
+check("and may change shape doing it", drawnBox.fit, "none");
+
+// Drag the grip out, further in one axis than the other.
+const before = await box(0);
+await page.locator("[data-node-id]").first().click();
+await page.waitForTimeout(250);
+const handle = await page.locator("[data-resize-handle]").boundingBox();
+await page.evaluate(
+  ({ x, y }) => {
+    const surface = document.querySelector('[class*="surface"]');
+    const grip = document.querySelector("[data-resize-handle]");
+    const at = (node, type, cx, cy) =>
+      node.dispatchEvent(
+        new PointerEvent(type, {
+          pointerId: 93, pointerType: "touch", isPrimary: true,
+          clientX: cx, clientY: cy, width: 40, height: 40,
+          pressure: type === "pointerup" ? 0 : 0.5, bubbles: true, cancelable: true,
+        }),
+      );
+    at(grip, "pointerdown", x, y);
+    for (let i = 1; i <= 8; i++) at(surface, "pointermove", x + i * 20, y + i * 5);
+    at(surface, "pointerup", x + 160, y + 40);
+  },
+  { x: handle.x + handle.width / 2, y: handle.y + handle.height / 2 },
+);
+await page.waitForTimeout(400);
+
+const stretched = await page.evaluate(() => {
+  const svg = document.querySelector('[class*="inkLayer"]');
+  const card = document.querySelector("[data-node-id]");
+  return {
+    viewBox: svg.getAttribute("viewBox"),
+    svg: [Math.round(svg.width.baseVal.value), Math.round(svg.height.baseVal.value)],
+    card: [parseFloat(card.style.width), parseFloat(card.style.height)],
+  };
+});
+check("the card really did change shape", stretched.card, [before.width + 160, before.height + 40]);
+check("the writing is drawn at the new size", stretched.svg, stretched.card);
+check("stretched from the box it was written against, which does not move", stretched.viewBox, drawnBox.viewBox);
+
+await page.waitForTimeout(800);
+const resized = (await readPersistedCanvas(page)).nodes[0];
+check(
+  "and nothing was rewritten to do it",
+  resized["x-mindmap-ink"].strokes.map((k) => k.points.join()).join("|"),
+  strokes.map((k) => k.points.join()).join("|"),
+);
+
+// A stroke added after the resize has to join the ones already there rather
+// than being pinned to the size the card happens to be now.
+await ensureInking();
+const room2 = await box(0);
+// Across the middle, clear of the Done and undo buttons in the bottom corner —
+// those carry data-card-action and the surface deliberately does not see them.
+await stroke([
+  [room2.x + 40, room2.y + room2.height * 0.55],
+  [room2.x + room2.width * 0.6, room2.y + room2.height * 0.6],
+]);
+await page.waitForTimeout(800);
+const joined = (await readPersistedCanvas(page)).nodes[0];
+check(
+  "a stroke drawn after the resize keeps the same box",
+  [joined["x-mindmap-ink"].width, joined["x-mindmap-ink"].height],
+  [resized["x-mindmap-ink"].width, resized["x-mindmap-ink"].height],
+);
+check("and joins the strokes already there", joined["x-mindmap-ink"].strokes.length, strokes.length + 1);
+
+// The proof that converting into the box is right: scaling the stored points
+// back out by the card's size has to land where the pen actually was.
+const last = joined["x-mindmap-ink"].strokes.at(-1);
+const inkBox = joined["x-mindmap-ink"];
+check(
+  "and lands where the pen was, not where the card's size would have put it",
+  [
+    Math.round((last.points[0] * joined.width) / inkBox.width),
+    Math.round((last.points[1] * joined.height) / inkBox.height),
+  ],
+  [40, Math.round(room2.height * 0.55)],
 );
 
 check("no page errors", errors, []);

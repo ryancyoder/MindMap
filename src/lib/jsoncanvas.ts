@@ -366,21 +366,30 @@ export function previewNeedsFetch(node: CanvasNode): boolean {
  *    whole point — an agent reading the file can at least see that a card was
  *    written on, where an opaque blob id tells it nothing.
  *
- * Coordinates are **card-local pixels** from the card's top-left, so making a
- * card bigger gives more room to write rather than magnifying what is there.
+ * Coordinates are relative to a **box recorded alongside them** — the size the
+ * card was when the writing was done. The card draws that box at whatever size
+ * it currently is, so the annotation stretches with the card in both axes: make
+ * the card wider and the writing gets wider with it. Storing the box rather
+ * than normalising to 0..1 keeps the numbers legible, and means a card that is
+ * never resized stores exactly the pixels that were drawn.
  */
 export const INK_KEY = "x-mindmap-ink";
 
 export type InkStroke = {
-  /** Flat pairs in card-local pixels: x0, y0, x1, y1, … */
+  /** Flat pairs in the ink box's coordinates: x0, y0, x1, y1, … */
   points: number[];
-  /** Nib width, in the same card-local pixels. */
+  /** Nib width, in the same coordinates. */
   width: number;
 };
 
-/** The strokes on a card, ignoring anything that is not a usable stroke. */
-export function nodeInk(node: CanvasNode): InkStroke[] {
-  const value = (node as Record<string, unknown>)[INK_KEY];
+export type CardInk = {
+  /** The box the strokes were drawn against, and are drawn stretched from. */
+  width: number;
+  height: number;
+  strokes: InkStroke[];
+};
+
+function readStrokes(value: unknown): InkStroke[] {
   if (!Array.isArray(value)) return [];
   const strokes: InkStroke[] = [];
   for (const entry of value) {
@@ -394,11 +403,36 @@ export function nodeInk(node: CanvasNode): InkStroke[] {
   return strokes;
 }
 
-/** Put strokes on a node, or take them all off. Never mutates the node given. */
-export function withInk(node: CanvasNode, strokes: InkStroke[]): CanvasNode {
+/**
+ * The writing on a card, and the box it is drawn against.
+ *
+ * A bare array is how this was written before the ink stretched with the card.
+ * Read that as having been drawn at the card's present size, which is exactly
+ * where it is already being shown — so an old map upgrades without anything
+ * moving, and stretches from there like everything else.
+ */
+export function nodeInk(node: CanvasNode): CardInk | null {
+  const value = (node as Record<string, unknown>)[INK_KEY];
+  if (Array.isArray(value)) {
+    const strokes = readStrokes(value);
+    return strokes.length ? { width: node.width, height: node.height, strokes } : null;
+  }
+  if (!isRecord(value)) return null;
+  const strokes = readStrokes(value.strokes);
+  if (!strokes.length) return null;
+  const width = typeof value.width === "number" && value.width > 0 ? value.width : node.width;
+  const height = typeof value.height === "number" && value.height > 0 ? value.height : node.height;
+  return { width, height, strokes };
+}
+
+/** Put writing on a node, or take it all off. Never mutates the node given. */
+export function withInk(node: CanvasNode, ink: CardInk | null): CanvasNode {
   const next = { ...node } as Record<string, unknown>;
-  if (strokes.length) next[INK_KEY] = strokes;
-  else delete next[INK_KEY];
+  if (ink && ink.strokes.length) {
+    next[INK_KEY] = { width: ink.width, height: ink.height, strokes: ink.strokes };
+  } else {
+    delete next[INK_KEY];
+  }
   return next as CanvasNode;
 }
 

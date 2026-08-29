@@ -327,9 +327,24 @@ order as the text the card would otherwise hold. And it is the app's own
 content — a `.canvas` carrying the handwriting is the point, where an opaque
 blob id would tell a reader nothing.
 
-Coordinates are **card-local pixels**, so enlarging a card gives more room to
-write rather than magnifying what is already there. The live stroke is clipped
-to the card while it is being drawn, so what is under the pen is what stays.
+**The writing stretches with the card, in both axes.** An annotation belongs to
+the tile it is on, so resizing the tile resizes it — and a card can change shape
+as well as size, which is why the SVG carries `preserveAspectRatio="none"`.
+
+What makes that work is that the strokes record **the box they were drawn
+against** (`CardInk.width/height`) rather than being pinned to the card's
+current size. The card draws that box at whatever size it is now. A stroke added
+after a resize is converted into the same box on the way in, so it joins the
+writing already there instead of being pinned to the size the card happens to be
+at that moment — `verify-ink.mjs` proves the round trip by scaling a stored
+point back out and checking it lands where the pen actually was.
+
+`INK_KEY` was a bare array before the ink stretched. That form is read as having
+been drawn at the card's present size, which is exactly where it is already
+being shown, so an old map upgrades without anything moving.
+
+The live stroke is clipped to the card while it is being drawn, so what is under
+the pen is what stays.
 
 One `applyDoc` per stroke, so a mis-drawn letter is one undo rather than a whole
 page. `INK_TOLERANCE` is deliberately tighter than the recognizer's: the

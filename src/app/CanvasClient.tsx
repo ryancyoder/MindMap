@@ -756,12 +756,16 @@ export default function CanvasClient() {
       const current = docRef.current;
       const node = current.nodes.find((n) => n.id === nodeId);
       if (!node) return;
-      const stroke = inkFromStroke(points, node);
+      // Writing already on the card fixes the box everything is drawn against;
+      // the first stroke on a bare card sets it to whatever size the card is.
+      const existing = nodeInk(node);
+      const box = existing ?? { width: node.width, height: node.height, strokes: [] };
+      const stroke = inkFromStroke(points, node, box);
       if (!stroke) return;
       applyDoc({
         ...current,
         nodes: current.nodes.map((n) =>
-          n.id === nodeId ? withInk(n, [...nodeInk(n), stroke]) : n,
+          n.id === nodeId ? withInk(n, { ...box, strokes: [...box.strokes, stroke] }) : n,
         ),
       });
     },
@@ -780,11 +784,13 @@ export default function CanvasClient() {
     const current = docRef.current;
     const node = current.nodes.find((n) => n.id === nodeId);
     if (!node) return;
-    const strokes = nodeInk(node);
-    if (strokes.length === 0) return;
+    const ink = nodeInk(node);
+    if (!ink) return;
     applyDoc({
       ...current,
-      nodes: current.nodes.map((n) => (n.id === nodeId ? withInk(n, strokes.slice(0, -1)) : n)),
+      nodes: current.nodes.map((n) =>
+        n.id === nodeId ? withInk(n, { ...ink, strokes: ink.strokes.slice(0, -1) }) : n,
+      ),
     });
   }, [applyDoc]);
 
@@ -3055,7 +3061,7 @@ export default function CanvasClient() {
                       Open ↗
                     </a>
                   </div>
-                ) : (picture || ink.length) && !said ? null : (
+                ) : (picture || ink) && !said ? null : (
                   // A card that is only a picture, or only handwriting, already
                   // says what it says. "Empty" over the top of either is a lie.
                   <div className={node.type === "group" ? styles.groupLabel : styles.nodeText}>
@@ -3065,17 +3071,20 @@ export default function CanvasClient() {
                       ))}
                   </div>
                 )}
-                {ink.length ? (
-                  // One unit per card pixel, so making the card bigger gives
-                  // more room to write rather than magnifying what is there.
+                {ink ? (
+                  // The box the writing was drawn against, drawn at whatever
+                  // size the card is now — so the annotation stretches with the
+                  // card, in both axes independently. `none` is what allows the
+                  // shape to change and not just the scale.
                   <svg
                     className={styles.inkLayer}
-                    viewBox={`0 0 ${node.width} ${node.height}`}
+                    viewBox={`0 0 ${ink.width} ${ink.height}`}
                     width={node.width}
                     height={node.height}
+                    preserveAspectRatio="none"
                     aria-hidden
                   >
-                    {ink.map((stroke, i) => (
+                    {ink.strokes.map((stroke, i) => (
                       <path
                         key={i}
                         d={strokePath(stroke)}
@@ -3094,7 +3103,7 @@ export default function CanvasClient() {
                       className={styles.sketchAction}
                       data-card-action="undo-stroke"
                       onClick={() => undoLastStroke(node.id)}
-                      disabled={ink.length === 0}
+                      disabled={!ink}
                       aria-label="Undo the last stroke"
                     >
                       ⤺

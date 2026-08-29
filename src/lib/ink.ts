@@ -30,16 +30,30 @@ const MIN_POINTS = 2;
  * clamped to its bounds — the card clips what it draws, so ink that wandered
  * outside would be kept but never seen again.
  *
- * One width for the whole stroke, from its mean pressure. Per-segment widths
- * would need a filled outline rather than a stroked path, which is a great deal
- * of machinery for a nib that varies by a pixel across a handwritten word.
+ * `into` is the box the card's existing writing is already drawn against, which
+ * is not the card's current size once it has been resized. Converting into it
+ * is what lets a stroke added afterwards sit alongside the earlier ones and
+ * stretch with them, instead of being pinned to the size the card happens to be
+ * at the moment it was written.
+ *
+ * One width for the whole stroke, from its mean pressure, scaled by the same
+ * amount the geometry is. Per-segment widths would need a filled outline rather
+ * than a stroked path, which is a great deal of machinery for a nib that varies
+ * by a pixel across a handwritten word.
  */
-export function inkFromStroke(points: Pt[], card: Rect): InkStroke | null {
+export function inkFromStroke(
+  points: Pt[],
+  card: Rect,
+  into: { width: number; height: number } = card,
+): InkStroke | null {
   if (points.length < MIN_POINTS) return null;
 
+  const scaleX = card.width > 0 ? into.width / card.width : 1;
+  const scaleY = card.height > 0 ? into.height / card.height : 1;
+
   const local = points.map((p) => ({
-    x: clamp(p.x - card.x, 0, card.width),
-    y: clamp(p.y - card.y, 0, card.height),
+    x: clamp(p.x - card.x, 0, card.width) * scaleX,
+    y: clamp(p.y - card.y, 0, card.height) * scaleY,
     p: p.p,
     t: p.t,
   }));
@@ -55,10 +69,10 @@ export function inkFromStroke(points: Pt[], card: Rect): InkStroke | null {
   }
 
   const pressure = points.reduce((sum, point) => sum + (point.p || 0.5), 0) / points.length;
-  return {
-    points: flat,
-    width: Math.round((INK_WIDTH_MIN + pressure * INK_WIDTH_RANGE) * 10) / 10,
-  };
+  // The nib scales by the geometric mean of the two axes, which is the one
+  // factor that keeps a stroke's weight looking right under a lopsided stretch.
+  const nib = (INK_WIDTH_MIN + pressure * INK_WIDTH_RANGE) * Math.sqrt(scaleX * scaleY);
+  return { points: flat, width: Math.round(nib * 10) / 10 };
 }
 
 /**

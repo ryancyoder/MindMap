@@ -18,12 +18,14 @@ import {
   nestedCanvasId,
   nestedCanvasName,
   nodeDisplayText,
+  nodeInk,
   parseCanvas,
   PRESET_COLOR_IDS,
   PREVIEW_KEY,
   previewNeedsFetch,
   resolveColor,
   serializeCanvas,
+  withInk,
   type Canvas,
   type CanvasEdge,
   type CanvasNode,
@@ -34,10 +36,11 @@ import {
   type TextNode,
 } from "@/lib/jsoncanvas";
 import { hostOf, normalizeUrl } from "@/lib/bookmark";
+import { inkFromStroke, strokePath } from "@/lib/ink";
 import { duplicateNodes } from "@/lib/duplicate";
 import { nodeAt, nodeRect, recognize, RECOGNIZER } from "@/lib/recognize";
 import { imageFromTransfer, readImageFile, transferHasImage } from "@/lib/images";
-import { edgeCurve, rectsOverlap, snap } from "@/lib/geometry";
+import { edgeCurve, pointInRect, rectsOverlap, snap } from "@/lib/geometry";
 import {
   loadCalibration,
   normalizeAxis,
@@ -166,7 +169,12 @@ const PREVIEW_BATCH = 6;
 const MIN_ZOOM = 0.15;
 const MAX_ZOOM = 4;
 
-type ActiveStroke = { pointerId: number; points: Pt[] };
+type ActiveStroke = {
+  pointerId: number;
+  points: Pt[];
+  /** The card this stroke is being written inside, if it is ink rather than a gesture. */
+  inkFor?: string;
+};
 type Toast = { id: number; message: string };
 
 export default function CanvasClient() {
@@ -178,6 +186,16 @@ export default function CanvasClient() {
   // and multi-card drag fall out of one model instead of three special cases.
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [editingId, setEditingId] = useState<string | null>(null);
+  /**
+   * The card the pen is currently writing inside, if any.
+   *
+   * A card has to be opened for ink the same way it is opened for text, and for
+   * the same reason: a pen stroke over a card already means something — a
+   * scribble deletes it, a loop makes a card, a line to another card joins
+   * them. Ink cannot also be the default reading of a stroke without taking one
+   * of those away. This is a destination, not a tool: you are inside a card.
+   */
+  const [sketchingId, setSketchingId] = useState<string | null>(null);
   const [editingText, setEditingText] = useState("");
   const [history, setHistory] = useState<History>(() => initHistory(emptyCanvas()));
   const [toasts, setToasts] = useState<Toast[]>([]);
@@ -301,6 +319,7 @@ export default function CanvasClient() {
   const docRef = useRef(doc);
   const editingIdRef = useRef<string | null>(null);
   const editingTextRef = useRef("");
+  const sketchingIdRef = useRef<string | null>(null);
 
   // Mirror the state that pointer handlers read. Handlers fire between renders
   // and must see the latest values, but they run at pointer rate and must not
@@ -312,6 +331,7 @@ export default function CanvasClient() {
     docRef.current = doc;
     editingIdRef.current = editingId;
     editingTextRef.current = editingText;
+    sketchingIdRef.current = sketchingId;
     historyRef.current = history;
     selectedIdsRef.current = selectedIds;
     snapRef.current = snapToGrid;
@@ -464,6 +484,24 @@ export default function CanvasClient() {
     ctx.lineCap = "round";
     ctx.lineJoin = "round";
 
+    // Ink is clipped to the card that will keep it, so what is drawn under the
+    // pen is exactly what stays. Without this a stroke that wandered over the
+    // edge would show while drawing and vanish on lifting.
+    const inkFor = stroke.inkFor
+      ? docRef.current.nodes.find((n) => n.id === stroke.inkFor)
+      : undefined;
+    if (inkFor) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(
+        inkFor.x * t.k + t.x,
+        inkFor.y * t.k + t.y,
+        inkFor.width * t.k,
+        inkFor.height * t.k,
+      );
+      ctx.clip();
+    }
+
     // Width tracks pressure, so the ink looks like ink. Apple Pencil reports
     // real pressure; a finger or mouse reports 0.5 and gets a uniform line.
     for (let i = 1; i < stroke.points.length; i++) {
@@ -475,6 +513,7 @@ export default function CanvasClient() {
       ctx.lineTo(b.x * t.k + t.x, b.y * t.k + t.y);
       ctx.stroke();
     }
+    if (inkFor) ctx.restore();
   }, []);
 
   const clearInk = useCallback(() => {
@@ -706,6 +745,49 @@ export default function CanvasClient() {
     applyDoc({ ...current, nodes });
   }, [applyDoc]);
 
+  /**
+   * Keep a finished stroke as ink on the card it was drawn in.
+   *
+   * One `applyDoc` per stroke, so a mis-drawn letter is one undo rather than a
+   * whole page of writing.
+   */
+  const commitInk = useCallback(
+    (nodeId: string, points: Pt[]) => {
+      const current = docRef.current;
+      const node = current.nodes.find((n) => n.id === nodeId);
+      if (!node) return;
+      const stroke = inkFromStroke(points, node);
+      if (!stroke) return;
+      applyDoc({
+        ...current,
+        nodes: current.nodes.map((n) =>
+          n.id === nodeId ? withInk(n, [...nodeInk(n), stroke]) : n,
+        ),
+      });
+    },
+    [applyDoc],
+  );
+
+  /** Open a card for writing in. Text and ink cannot both own the card at once. */
+  const beginSketching = useCallback((nodeId: string) => {
+    setEditingId(null);
+    setSelectedIds([nodeId]);
+    setSketchingId(nodeId);
+  }, []);
+
+  /** Take the last stroke back off the card being written in. */
+  const undoLastStroke = useCallback((nodeId: string) => {
+    const current = docRef.current;
+    const node = current.nodes.find((n) => n.id === nodeId);
+    if (!node) return;
+    const strokes = nodeInk(node);
+    if (strokes.length === 0) return;
+    applyDoc({
+      ...current,
+      nodes: current.nodes.map((n) => (n.id === nodeId ? withInk(n, strokes.slice(0, -1)) : n)),
+    });
+  }, [applyDoc]);
+
   /** Stop any in-flight programmatic zoom, so direct manipulation always wins. */
   const cancelAnim = useCallback(() => {
     if (animRef.current !== null) {
@@ -930,9 +1012,20 @@ export default function CanvasClient() {
       if (editingId) commitEditing();
 
       const world = toWorld(e.clientX, e.clientY);
+
+      // A card opened for writing keeps every stroke that starts inside it.
+      // A stroke that starts outside closes the card and is then an ordinary
+      // gesture again, so leaving costs nothing and never eats a stroke.
+      const openCard = sketchingIdRef.current
+        ? docRef.current.nodes.find((n) => n.id === sketchingIdRef.current)
+        : undefined;
+      const inking = openCard && pointInRect(world, openCard);
+      if (sketchingIdRef.current && !inking) setSketchingId(null);
+
       strokeRef.current = {
         pointerId: e.pointerId,
         points: [{ x: world.x, y: world.y, p: e.pressure || 0.5, t: performance.now() }],
+        inkFor: inking ? openCard.id : undefined,
       };
       // Capture keeps moves coming if the stroke wanders off the surface, but
       // it throws for a pointer the browser no longer considers active. The
@@ -1193,6 +1286,7 @@ export default function CanvasClient() {
         return;
       }
 
+      if (sketchingIdRef.current && nodeId !== sketchingIdRef.current) setSketchingId(null);
       lastTapRef.current = { t: now, x: at.x, y: at.y, nodeId };
       selectOnly(nodeId);
     },
@@ -1337,9 +1431,15 @@ export default function CanvasClient() {
       penUntilRef.current = performance.now() + PEN_PRIORITY_MS;
       strokeRef.current = null;
       clearInk();
+      // Ink is not a gesture: it says nothing about the map, only about the
+      // card it was written in, so the recognizer never sees it.
+      if (stroke.inkFor) {
+        commitInk(stroke.inkFor, stroke.points);
+        return;
+      }
       applyGesture(stroke.points);
     },
-    [applyGesture, clearInk, endTouch, finishLasso, finishNodeDrag, finishResize],
+    [applyGesture, clearInk, commitInk, endTouch, finishLasso, finishNodeDrag, finishResize],
   );
 
   const onPointerCancel = useCallback(
@@ -2743,7 +2843,10 @@ export default function CanvasClient() {
         }
         return;
       }
-      if (e.key === "Escape") setSelectedIds([]);
+      if (e.key === "Escape") {
+        if (sketchingId) setSketchingId(null);
+        else setSelectedIds([]);
+      }
       if (e.key.toLowerCase() === "a" && (e.metaKey || e.ctrlKey)) {
         e.preventDefault();
         selectAll();
@@ -2759,6 +2862,7 @@ export default function CanvasClient() {
     closeJump,
     commitEditing,
     deleteSelected,
+    sketchingId,
     doRedo,
     doUndo,
     jumpOpen,
@@ -2830,6 +2934,8 @@ export default function CanvasClient() {
             const isEditing = editingId === node.id;
             const picture = imageKey(node);
             const said = nodeDisplayText(node);
+            const ink = nodeInk(node);
+            const sketching = sketchingId === node.id;
             return (
               <div
                 key={node.id}
@@ -2838,6 +2944,7 @@ export default function CanvasClient() {
                   styles.node,
                   node.type === "group" ? styles.groupNode : "",
                   node.type === "link" ? styles.linkNode : picture ? styles.imageNode : "",
+                  sketching ? styles.sketchNode : "",
                   isCanvasFile(node) ? styles.doorwayNode : "",
                   selectedIds.includes(node.id) ? styles.nodeSelected : "",
                 ]
@@ -2948,9 +3055,9 @@ export default function CanvasClient() {
                       Open ↗
                     </a>
                   </div>
-                ) : picture && !said ? null : (
-                  // A card that is only a picture says nothing, and "Empty" over
-                  // a photograph would be a lie.
+                ) : (picture || ink.length) && !said ? null : (
+                  // A card that is only a picture, or only handwriting, already
+                  // says what it says. "Empty" over the top of either is a lie.
                   <div className={node.type === "group" ? styles.groupLabel : styles.nodeText}>
                     {said ||
                       (node.type === "group" ? null : (
@@ -2958,6 +3065,50 @@ export default function CanvasClient() {
                       ))}
                   </div>
                 )}
+                {ink.length ? (
+                  // One unit per card pixel, so making the card bigger gives
+                  // more room to write rather than magnifying what is there.
+                  <svg
+                    className={styles.inkLayer}
+                    viewBox={`0 0 ${node.width} ${node.height}`}
+                    width={node.width}
+                    height={node.height}
+                    aria-hidden
+                  >
+                    {ink.map((stroke, i) => (
+                      <path
+                        key={i}
+                        d={strokePath(stroke)}
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth={stroke.width}
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+                    ))}
+                  </svg>
+                ) : null}
+                {sketching ? (
+                  <span className={styles.sketchBar}>
+                    <button
+                      className={styles.sketchAction}
+                      data-card-action="undo-stroke"
+                      onClick={() => undoLastStroke(node.id)}
+                      disabled={ink.length === 0}
+                      aria-label="Undo the last stroke"
+                    >
+                      ⤺
+                    </button>
+                    <button
+                      className={styles.sketchAction}
+                      data-card-action="done"
+                      onClick={() => setSketchingId(null)}
+                      aria-label="Stop writing on this card"
+                    >
+                      Done
+                    </button>
+                  </span>
+                ) : null}
                 {picture && node.type !== "link" ? (
                   images[picture] ? (
                     // next/image exists to fetch and optimize a remote file.
@@ -3148,6 +3299,19 @@ export default function CanvasClient() {
                 />
               ))}
             </div>
+            {selectedNodes.length === 1 ? (
+              <button
+                className={`${styles.button} ${sketchingId === selectedNodes[0].id ? styles.buttonOn : ""}`}
+                onClick={() =>
+                  sketchingId === selectedNodes[0].id
+                    ? setSketchingId(null)
+                    : beginSketching(selectedNodes[0].id)
+                }
+                title="Write or sketch on this card with the pen"
+              >
+                Ink
+              </button>
+            ) : null}
             {selectedNodes.length === 1 && isCanvasFile(selectedNodes[0]) ? (
               <>
                 <button className={styles.button} onClick={() => void openNested(selectedNodes[0])}>

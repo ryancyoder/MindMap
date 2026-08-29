@@ -349,6 +349,59 @@ export function previewNeedsFetch(node: CanvasNode): boolean {
   return !("icon" in value);
 }
 
+/**
+ * Handwriting and sketching done inside a card.
+ *
+ * An extra key holding the strokes themselves, rather than an id pointing at
+ * bytes kept elsewhere the way a photograph is. Three reasons, and they pull
+ * the opposite way from the picture case:
+ *
+ *  - Ink has to stay sharp. The canvas zooms from 0.15x to 4x, and a rasterised
+ *    sketch would be a smear at the top of that range. Strokes are drawn at
+ *    whatever size they are shown.
+ *  - It is small. A photograph is hundreds of kilobytes; a card of handwriting
+ *    is a few thousand rounded integers once simplified, which is the same
+ *    order as the text a card would otherwise hold.
+ *  - It is the app's own content. A `.canvas` carrying the handwriting is the
+ *    whole point — an agent reading the file can at least see that a card was
+ *    written on, where an opaque blob id tells it nothing.
+ *
+ * Coordinates are **card-local pixels** from the card's top-left, so making a
+ * card bigger gives more room to write rather than magnifying what is there.
+ */
+export const INK_KEY = "x-mindmap-ink";
+
+export type InkStroke = {
+  /** Flat pairs in card-local pixels: x0, y0, x1, y1, … */
+  points: number[];
+  /** Nib width, in the same card-local pixels. */
+  width: number;
+};
+
+/** The strokes on a card, ignoring anything that is not a usable stroke. */
+export function nodeInk(node: CanvasNode): InkStroke[] {
+  const value = (node as Record<string, unknown>)[INK_KEY];
+  if (!Array.isArray(value)) return [];
+  const strokes: InkStroke[] = [];
+  for (const entry of value) {
+    if (!isRecord(entry)) continue;
+    const points = entry.points;
+    if (!Array.isArray(points) || points.length < 4 || points.length % 2 !== 0) continue;
+    if (!points.every((n) => typeof n === "number" && Number.isFinite(n))) continue;
+    const width = typeof entry.width === "number" && entry.width > 0 ? entry.width : 2;
+    strokes.push({ points: points as number[], width });
+  }
+  return strokes;
+}
+
+/** Put strokes on a node, or take them all off. Never mutates the node given. */
+export function withInk(node: CanvasNode, strokes: InkStroke[]): CanvasNode {
+  const next = { ...node } as Record<string, unknown>;
+  if (strokes.length) next[INK_KEY] = strokes;
+  else delete next[INK_KEY];
+  return next as CanvasNode;
+}
+
 export function isTextNode(node: CanvasNode): node is TextNode & UnknownKeys {
   return node.type === "text";
 }

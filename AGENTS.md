@@ -33,6 +33,7 @@ src/lib/geometry.ts        stroke math, hit tests, edge anchoring
 src/lib/recognize.ts       stroke -> intent (the pen model lives here)
 src/lib/images.ts          camera/library/paste/drop -> a bounded data URL
 src/lib/bookmark.ts        is this a link, and what does the page say it is
+src/lib/ink.ts             a pen stroke -> ink kept on a card
 src/lib/duplicate.ts       what a copied card carries
 src/lib/store.ts           IndexedDB canvas library, localStorage last-opened
 src/lib/history.ts         undo/redo by snapshot
@@ -228,6 +229,13 @@ bottom of the canvas.
 device sizes; the rest of the suite runs at one wide desktop viewport where
 this class of bug cannot appear.
 
+It also asserts that on a landscape iPad **both bars fit on one row**. Wrapping
+is what stops them colliding, but each extra row is canvas nobody can draw on:
+one button too many in the selection bar wrapped it onto a second row, the dock
+grew from 58px to 124px, and strokes that used to land on the page started
+landing on the chrome. `verify-gestures` caught that by accident; this catches
+it on purpose.
+
 ## Jump palette
 
 ⌘K opens a palette over everything: maps first, then cards in the map currently
@@ -295,6 +303,38 @@ rather than estimating, because wrapping depends on the actual font.
 `CARD_PADDING_X/Y` and `CARD_BORDER` mirror `canvas.module.css`. **If you change
 the card's padding or border in CSS, change them here too** — they were 3px
 apart once and that was enough to clip a whole wrapped line on a narrow card.
+
+## Writing on a card
+
+A card can be opened for the pen the way it is opened for text, and then every
+stroke inside it is kept as ink rather than read as a gesture. **Ink cannot be
+the default reading of a stroke over a card**, and that is the whole design
+constraint: a scribble already deletes, a loop already makes a card, a line to
+another card already joins them. Making ink automatic would take one of those
+away. So there is a door — the **Ink** button in the selection bar — and it is a
+destination rather than a tool: you are *inside* a card, exactly as you are when
+a textarea is open.
+
+Leaving is anything you would expect: Done, Escape, tapping another card, or
+starting a stroke outside the card. That last one both closes the card and lets
+the stroke count as an ordinary gesture, so leaving never eats a stroke.
+
+**Strokes are stored on the node, not as bytes elsewhere** — the opposite of
+the choice made for photographs, for three reasons. Ink has to stay sharp
+across a zoom range of 0.15x to 4x, and a raster would smear at the top of it.
+It is small: a card of handwriting is a few thousand rounded integers, the same
+order as the text the card would otherwise hold. And it is the app's own
+content — a `.canvas` carrying the handwriting is the point, where an opaque
+blob id would tell a reader nothing.
+
+Coordinates are **card-local pixels**, so enlarging a card gives more room to
+write rather than magnifying what is already there. The live stroke is clipped
+to the card while it is being drawn, so what is under the pen is what stays.
+
+One `applyDoc` per stroke, so a mis-drawn letter is one undo rather than a whole
+page. `INK_TOLERANCE` is deliberately tighter than the recognizer's: the
+recognizer is asking what a stroke *meant* and wants tremor gone, while this is
+the stroke itself and flattening handwriting changes what it says.
 
 ## Pictures
 

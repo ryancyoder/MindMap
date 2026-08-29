@@ -59,7 +59,15 @@ for (const [label, width, height] of SIZES) {
     const toasts = box('[class*="toasts"]');
     const zoom = box('[class*="zoomLabel"]');
 
+    const dock = box('[class*="bottomDock"]');
     return {
+      // Whether the two bars are side by side or have wrapped apart. Wrapping
+      // is what stops them colliding, but each extra row is canvas nobody can
+      // draw on — a control added without noticing pushes them apart and takes
+      // a strip of the page with it. Asked of the bars rather than of the dock,
+      // which also holds any toast that happens to be up.
+      barsShareARow: !!bottom && !!inspector && Math.abs(bottom.top - inspector.top) < 2,
+      dockHeight: dock ? Math.round(dock.height) : 0,
       overflows: document.documentElement.scrollWidth > window.innerWidth,
       barsOverlap: overlaps(bottom, inspector),
       toastOverlapsBars: overlaps(toasts, bottom) || overlaps(toasts, inspector),
@@ -75,6 +83,14 @@ for (const [label, width, height] of SIZES) {
   check(`${label}: no bar runs off the right edge`, report.offRight, false);
   check(`${label}: no bar runs off the bottom`, report.offBottom, false);
   check(`${label}: the zoom control stays visible`, report.zoomCovered, false);
+  // On a landscape iPad — the shape this is drawn on, and the one every other
+  // suite runs at — both bars have to fit on one row with a card selected. They
+  // did not, once: an extra button in the selection bar wrapped it onto a
+  // second row, and the strokes verify-gestures draws at the bottom of the page
+  // started landing on the chrome instead of the canvas.
+  if (label === "iPad landscape") {
+    check(`${label}: both bars fit on one row`, report.barsShareARow, true);
+  }
 
   await page.close();
 }

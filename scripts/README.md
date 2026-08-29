@@ -21,6 +21,7 @@ node scripts/verify-multitouch.mjs        # two/three-finger undo and redo
 node scripts/verify-multiselect.mjs       # multi-select, align, bulk move
 node scripts/verify-copy.mjs              # long-press to copy a card
 node scripts/verify-bookmark.mjs          # pasting a link, and the route that fetches it
+node scripts/verify-ink.mjs               # writing inside a card with the pen
 node scripts/verify-arrange.mjs           # snap, edge alignment, pen select mode
 node scripts/verify-layout.mjs            # chrome layout at real device sizes
 node scripts/verify-edges.mjs             # deleting a connection
@@ -164,6 +165,12 @@ its own did nothing, and there was no way to delete a connection at all except
 by deleting one of the cards it joined. Its bowed-connector check is the one
 that matters — hit-testing samples the same curve the renderer draws, and a
 straight-line approximation passes the first check while failing that one.
+
+`verify-ink.mjs` covers writing inside a card, and most of it is about the door
+rather than the drawing. A pen stroke over a card already means something, so
+the checks that matter are that nothing changes while the card is shut — a
+scribble still deletes it — that the same scribble inside an open card is just a
+stroke, and that leaving hands the pen straight back to the map.
 
 `verify-tilt.mjs` runs the same checks on **two simulated devices whose sensors
 work in opposite directions**, because the mapping is calibrated by

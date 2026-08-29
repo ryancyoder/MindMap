@@ -347,6 +347,50 @@
   touch-action: manipulation;
 }
 
+/* Handwriting and sketching kept on a card. One SVG unit per card pixel, so
+   the ink stays the size it was drawn at when the card is made bigger. It sits
+   above the card's picture and below the grip. */
+.inkLayer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  color: var(--ink);
+  pointer-events: none;
+  overflow: visible;
+}
+
+/* A card open for writing. The ring says the pen belongs to this card now and
+   is not going to make a new one. */
+.sketchNode {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft), var(--shadow);
+}
+
+.sketchBar {
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
+  z-index: 3;
+  display: flex;
+  gap: 4px;
+}
+
+.sketchAction {
+  padding: 4px 9px;
+  border: none;
+  border-radius: 8px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.sketchAction:disabled {
+  opacity: 0.45;
+}
+
 /* ─── TRAIL ────────────────────────────────────────────────────────────── */
 
 .trail {

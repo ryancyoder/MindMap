@@ -35,6 +35,7 @@ src/lib/images.ts          camera/library/paste/drop -> a bounded data URL
 src/lib/bookmark.ts        is this a link, and what does the page say it is
 src/lib/ink.ts             a pen stroke -> ink kept on a card
 src/lib/duplicate.ts       what a copied card carries
+src/lib/layout.ts          where a card goes when the app places it
 src/lib/store.ts           IndexedDB canvas library, localStorage last-opened
 src/lib/history.ts         undo/redo by snapshot
 ```
@@ -81,13 +82,30 @@ navigation touch and made pan and pinch appear missing. Do not widen that
 filter back to all touches.
 
 A branched card comes out **the same size and shape as the card it came from**,
-centred on wherever the stroke stopped. A row of siblings then lines up without
-being dragged into line, and a map of big cards does not sprout a small one off
-the side of every idea. The one exception is a short flick off a wide card,
-where centring would bury the parent: then the new card is pushed clear along
-the side the stroke left by, so the flick still says which way and the result
-is still two cards you can see. That is `sizedLike` in `CanvasClient.tsx` —
-the recognizer stays about shape, and where a card lands stays with the editor.
+centred on wherever the stroke stopped (`sizedLike`). A row of siblings then
+lines up without being dragged into line, and a map of big cards does not sprout
+a small one off the side of every idea.
+
+**A card the app places never overlaps another, and always lands on the grid.**
+Both are `placeCard`, which snaps and then hands off to `slideClear` in
+`src/lib/layout.ts`: it moves a box in **one direction only** — the one asked
+for, or the cheapest — until nothing is within `CARD_GAP` of it. One direction
+is what makes it terminate: a box can never be pushed back into what it just
+escaped, so it cannot oscillate between two neighbours. The grid is applied by
+rounding each step *away* from the obstacle, so snapping can never eat the gap
+it just made. `layout.ts` has no imports, which is why the checks can run it
+directly.
+
+This is only for cards **nobody chose a spot for** — drawn, branched, pasted,
+dropped. A card you drag or resize by hand goes where you put it: pushing cards
+out from under a finger would be fighting the person holding the pen.
+
+Generated cards snap **whatever the Snap toggle says**. The toggle is about
+respecting a hand; a card the app placed had no hand to respect.
+
+One deliberate overlap survives all of this: a loop drawn **inside** a card is
+how an idea is nested, which the recognizer lets through on purpose, so that one
+is left where it was drawn.
 
 Recognizer thresholds live in one exported `RECOGNIZER` object in
 `src/lib/recognize.ts`. Tune there, not at call sites.

@@ -24,6 +24,7 @@ node scripts/verify-bookmark.mjs          # pasting a link, and the route that f
 node scripts/verify-ink.mjs               # writing inside a card with the pen
 node scripts/verify-arrange.mjs           # snap, edge alignment, pen select mode
 node scripts/verify-layout.mjs            # chrome layout at real device sizes
+node scripts/verify-layout-cards.mjs      # where a card lands when the app places it
 node scripts/verify-edges.mjs             # deleting a connection
 node scripts/verify-nesting.mjs           # folding a branch into its own map
 node scripts/verify-jump.mjs              # the Cmd-K jump palette
@@ -158,6 +159,14 @@ of a regression every other suite missed: two extra buttons pushed the bottom
 bar underneath the selection bar in portrait, hiding the zoom control. Nothing
 failed, because every other suite runs at one wide desktop viewport and the
 collision cannot happen there. **Add anything to a bar and run this.**
+
+`verify-layout-cards.mjs` covers placement. `slideClear` is checked against the
+module directly — it has no imports for exactly that reason — because a sliding
+algorithm is worth proving terminates rather than hoping: the cases that matter
+are a box hemmed in on three sides, and a row it has to clear entirely rather
+than sliding into the next one. The rest drives the app, including the one
+deliberate overlap in the pen model, a loop drawn inside a card to nest an idea,
+which has to survive a rule that otherwise pushes new cards apart.
 
 `verify-edges.mjs` covers removing a connection. That regressed once: the
 scribble branch required a *card* to be crossed, so scribbling out a link on

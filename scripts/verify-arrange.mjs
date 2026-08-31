@@ -109,10 +109,24 @@ check("one undo restores the original widths", (await boxes()).map((b) => b.w).j
 
 await page.keyboard.press("Escape");
 await page.waitForTimeout(150);
-const unsnapped = await boxes();
+
+// A card the app draws always lands on the grid, whatever the toggle says, so
+// the off-grid state the toggle exists to fix has to be made by hand: drag one
+// by an amount that is not a multiple of it, with snap still off.
+const drifted = await centreOn(0);
+const idDrift = ++pid;
+await send([
+  { type: "pointerdown", id: idDrift, kind: "touch", w: 50, x: drifted.x, y: drifted.y },
+  ...Array.from({ length: 6 }, (_, i) => ({
+    type: "pointermove", id: idDrift, kind: "touch", w: 50,
+    x: drifted.x + (i + 1) * 3, y: drifted.y + (i + 1) * 2,
+  })),
+  { type: "pointerup", id: idDrift, kind: "touch", w: 50, x: drifted.x + 18, y: drifted.y + 12 },
+]);
+await page.waitForTimeout(320);
 check(
-  "positions are off-grid to begin with",
-  unsnapped.some((b) => b.x % GRID !== 0 || b.y % GRID !== 0),
+  "a hand-dragged card with snap off comes to rest off-grid",
+  (await boxes()).some((b) => b.x % GRID !== 0 || b.y % GRID !== 0),
   true,
 );
 

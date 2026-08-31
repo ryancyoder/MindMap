@@ -36,6 +36,7 @@ import {
   type TextNode,
 } from "@/lib/jsoncanvas";
 import { hostOf, normalizeUrl } from "@/lib/bookmark";
+import { boxContains, slideClear, type Slide } from "@/lib/layout";
 import { inkFromStroke, strokePath } from "@/lib/ink";
 import { duplicateNodes } from "@/lib/duplicate";
 import { nodeAt, nodeRect, recognize, RECOGNIZER } from "@/lib/recognize";
@@ -161,6 +162,9 @@ const ZOOM_ANIM_MS = 260;
 /** Matches the dot grid in canvas.module.css. Change both together. */
 const GRID = 28;
 
+/** Clear space the app leaves around a card it places itself. */
+const CARD_GAP = GRID;
+
 /**
  * A bookmark card is square, because the icon that fills it is. Six grid
  * squares, so it lands on the grid when snap is on — and no bigger, because the
@@ -177,35 +181,22 @@ const MAX_ZOOM = 4;
 
 /**
  * Where a branched card goes: the size and shape of the card it came from,
- * centred on wherever the stroke stopped.
- *
- * With one exception. Matching the parent means a big card branches a big card,
- * and a short flick off a wide one would then land the new card squarely on top
- * of its parent. When that happens it is pushed clear along the side the stroke
- * left by — so the flick still says which way, and the result is still two
- * cards you can see.
+ * centred on wherever the stroke stopped. Whether that spot is free is
+ * `placeCard`'s problem, not this one's.
  */
-function sizedLike(at: Rect, from: CanvasNode, side: Side): Rect {
+function sizedLike(at: Rect, from: CanvasNode): Rect {
   const centre = rectCenter(at);
-  const rect = {
+  return {
     x: centre.x - from.width / 2,
     y: centre.y - from.height / 2,
     width: from.width,
     height: from.height,
   };
-  if (!rectsOverlap(rect, nodeRect(from))) return rect;
+}
 
-  const gap = GRID;
-  switch (side) {
-    case "right":
-      return { ...rect, x: from.x + from.width + gap };
-    case "left":
-      return { ...rect, x: from.x - gap - rect.width };
-    case "bottom":
-      return { ...rect, y: from.y + from.height + gap };
-    default:
-      return { ...rect, y: from.y - gap - rect.height };
-  }
+/** Which way a card leaving by a given side should be pushed. */
+function slideAway(side: Side): Slide {
+  return side === "right" ? "right" : side === "left" ? "left" : side === "bottom" ? "down" : "up";
 }
 
 type ActiveStroke = {
@@ -634,17 +625,43 @@ export default function CanvasClient() {
     [toggleSelected],
   );
 
+  /**
+   * Put a card the app is creating somewhere it can actually be seen: on the
+   * grid, and clear of everything already there by `CARD_GAP`.
+   *
+   * Only for cards nobody chose a spot for. A card you drag or resize by hand
+   * goes where you put it — pushing cards out from under a finger would be
+   * fighting the person holding the pen.
+   */
+  const placeCard = useCallback((rect: Rect, toward?: Slide): Rect => {
+    const placed = {
+      x: snap(rect.x, GRID),
+      y: snap(rect.y, GRID),
+      width: Math.round(rect.width),
+      height: Math.round(rect.height),
+    };
+    return slideClear(placed, docRef.current.nodes.map(nodeRect), CARD_GAP, {
+      toward,
+      grid: GRID,
+    });
+  }, []);
+
+  /**
+   * A card drawn by the app. Its position is always snapped: the grid is what
+   * makes a hand-drawn map line up without being tidied, and a card the app
+   * placed had no hand to respect. Dragging still honours the Snap toggle.
+   */
   const createTextNode = useCallback((rect: Rect): TextNode => {
     return {
       id: makeId(),
       type: "text",
       text: "",
-      x: gridSnap(rect.x),
-      y: gridSnap(rect.y),
+      x: snap(rect.x, GRID),
+      y: snap(rect.y, GRID),
       width: Math.round(rect.width),
       height: Math.round(rect.height),
     };
-  }, [gridSnap]);
+  }, []);
 
   const beginEditing = useCallback((node: CanvasNode) => {
     selectOnly(node.id);
@@ -678,7 +695,11 @@ export default function CanvasClient() {
         }
 
         case "loop": {
-          const node = createTextNode(gesture.rect);
+          // A loop drawn inside a card is how you nest an idea, and the
+          // recognizer lets that through on purpose — so it stays where it was
+          // drawn. Every other new card is moved clear of its neighbours.
+          const nested = current.nodes.some((n) => boxContains(nodeRect(n), gesture.rect));
+          const node = createTextNode(nested ? gesture.rect : placeCard(gesture.rect));
           applyDoc({ ...current, nodes: [...current.nodes, node] });
           beginEditing(node);
           return;
@@ -690,8 +711,14 @@ export default function CanvasClient() {
           // without being dragged into line, and a map of big cards does not
           // sprout a small one off the side of every idea.
           const from = current.nodes.find((n) => n.id === gesture.fromId);
-          const rect = from ? sizedLike(gesture.rect, from, gesture.fromSide) : gesture.rect;
-          const node = createTextNode(rect);
+          // Pushed out along the side the stroke left by, so a short flick off
+          // a wide card still says which way it went.
+          const node = createTextNode(
+            placeCard(
+              from ? sizedLike(gesture.rect, from) : gesture.rect,
+              slideAway(gesture.fromSide),
+            ),
+          );
           const toSide = oppositeSide(gesture.fromSide);
           const edge: CanvasEdge = {
             id: makeId(),
@@ -761,7 +788,7 @@ export default function CanvasClient() {
         }
       }
     },
-    [applyDoc, beginEditing, createTextNode, selectOnly, showToast, toggleSelected],
+    [applyDoc, beginEditing, createTextNode, placeCard, selectOnly, showToast, toggleSelected],
   );
 
   // ─── TEXT EDITING ─────────────────────────────────────────────────────────
@@ -1654,18 +1681,19 @@ export default function CanvasClient() {
         x: gridSnap(centre.x - width / 2),
         y: gridSnap(centre.y - height / 2),
       };
-      let spot = home;
       for (let slot = 0; slot < 64; slot++) {
-        spot = {
+        const spot = {
           x: gridSnap(home.x + (slot % 4) * (width + GRID)),
           y: gridSnap(home.y + Math.floor(slot / 4) * (height + GRID)),
         };
         const rect = { ...spot, width, height };
-        if (!docRef.current.nodes.some((n) => rectsOverlap(rect, nodeRect(n)))) break;
+        if (!docRef.current.nodes.some((n) => rectsOverlap(rect, nodeRect(n)))) return spot;
       }
-      return spot;
+      // Every slot on the sheet is taken. Rather than drop the card on one of
+      // them, slide it out of the way — the point is that it can be seen.
+      return placeCard({ ...home, width, height });
     },
-    [gridSnap, viewCentre],
+    [gridSnap, placeCard, viewCentre],
   );
 
   /**

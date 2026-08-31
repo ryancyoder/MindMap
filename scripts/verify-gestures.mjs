@@ -77,6 +77,28 @@ let c = await counts();
 check("branch adds a node", c.nodes, 2);
 check("branch adds an edge", c.edges, 1);
 
+// A branch is the same kind of thing as what it came from, so it comes out the
+// same size and shape — a row of siblings lines up without being dragged into
+// line, and a map of big cards does not sprout a small one off every idea.
+const boxes = () =>
+  page.evaluate(() =>
+    [...document.querySelectorAll("[data-node-id]")].map((n) => ({
+      x: parseFloat(n.style.left), y: parseFloat(n.style.top),
+      w: parseFloat(n.style.width), h: parseFloat(n.style.height),
+    })),
+  );
+const sized = await boxes();
+check(
+  "the branched card matches the one it came from",
+  [sized[1].w, sized[1].h],
+  [sized[0].w, sized[0].h],
+);
+check(
+  "and does not land on top of it",
+  sized[0].x + sized[0].w <= sized[1].x || sized[1].x + sized[1].w <= sized[0].x,
+  true,
+);
+
 await stroke(circle(360, 690, 60));
 await closeEditor();
 check("second loop creates a third node", (await counts()).nodes, 3);
@@ -97,6 +119,32 @@ await page.keyboard.press("Control+z");
 await page.waitForTimeout(200);
 c = await counts();
 check("undo restores node and edge", [c.nodes, c.edges], [3, 2]);
+
+// Matching the parent means a big card branches a big card, so a short flick
+// off a wide one has to be pushed clear rather than landing on top of it. Last,
+// because it leaves extra cards behind.
+await page.keyboard.press("Escape");
+await page.waitForTimeout(150);
+await page.locator("[data-node-id]").first().click();
+await page.waitForTimeout(250);
+const grip = await page.locator("[data-resize-handle]").boundingBox();
+await page.mouse.move(grip.x + grip.width / 2, grip.y + grip.height / 2);
+await page.mouse.down();
+await page.mouse.move(grip.x + 300, grip.y + 40, { steps: 8 });
+await page.mouse.up();
+await page.waitForTimeout(350);
+await page.keyboard.press("Escape");
+await page.waitForTimeout(200);
+
+const wide = (await boxes())[0];
+// A flick barely clear of the card's right edge. The new card is as wide as its
+// parent, so centring it on where the stroke stopped would bury the parent.
+await stroke(line(wide.x + wide.w - 40, wide.y + 40, wide.x + wide.w + 70, wide.y + 45));
+await closeEditor();
+const after = await boxes();
+const child = after[after.length - 1];
+check("a short flick off a wide card still matches its size", [child.w, child.h], [wide.w, wide.h]);
+check("and is pushed clear of it", child.x >= wide.x + wide.w, true);
 
 // What was persisted must be valid JSON Canvas.
 const saved = await readPersistedCanvas(page);

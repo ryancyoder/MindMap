@@ -80,6 +80,15 @@ iPad at 40-60px, so filtering by size unconditionally rejected every
 navigation touch and made pan and pinch appear missing. Do not widen that
 filter back to all touches.
 
+A branched card comes out **the same size and shape as the card it came from**,
+centred on wherever the stroke stopped. A row of siblings then lines up without
+being dragged into line, and a map of big cards does not sprout a small one off
+the side of every idea. The one exception is a short flick off a wide card,
+where centring would bury the parent: then the new card is pushed clear along
+the side the stroke left by, so the flick still says which way and the result
+is still two cards you can see. That is `sizedLike` in `CanvasClient.tsx` —
+the recognizer stays about shape, and where a card lands stays with the editor.
+
 Recognizer thresholds live in one exported `RECOGNIZER` object in
 `src/lib/recognize.ts`. Tune there, not at call sites.
 

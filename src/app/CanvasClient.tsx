@@ -169,6 +169,39 @@ const PREVIEW_BATCH = 6;
 const MIN_ZOOM = 0.15;
 const MAX_ZOOM = 4;
 
+/**
+ * Where a branched card goes: the size and shape of the card it came from,
+ * centred on wherever the stroke stopped.
+ *
+ * With one exception. Matching the parent means a big card branches a big card,
+ * and a short flick off a wide one would then land the new card squarely on top
+ * of its parent. When that happens it is pushed clear along the side the stroke
+ * left by — so the flick still says which way, and the result is still two
+ * cards you can see.
+ */
+function sizedLike(at: Rect, from: CanvasNode, side: Side): Rect {
+  const centre = rectCenter(at);
+  const rect = {
+    x: centre.x - from.width / 2,
+    y: centre.y - from.height / 2,
+    width: from.width,
+    height: from.height,
+  };
+  if (!rectsOverlap(rect, nodeRect(from))) return rect;
+
+  const gap = GRID;
+  switch (side) {
+    case "right":
+      return { ...rect, x: from.x + from.width + gap };
+    case "left":
+      return { ...rect, x: from.x - gap - rect.width };
+    case "bottom":
+      return { ...rect, y: from.y + from.height + gap };
+    default:
+      return { ...rect, y: from.y - gap - rect.height };
+  }
+}
+
 type ActiveStroke = {
   pointerId: number;
   points: Pt[];
@@ -646,7 +679,13 @@ export default function CanvasClient() {
         }
 
         case "branch": {
-          const node = createTextNode(gesture.rect);
+          // A branch is the same kind of thing as what it came from, so it
+          // comes out the same size and shape. A row of siblings then lines up
+          // without being dragged into line, and a map of big cards does not
+          // sprout a small one off the side of every idea.
+          const from = current.nodes.find((n) => n.id === gesture.fromId);
+          const rect = from ? sizedLike(gesture.rect, from, gesture.fromSide) : gesture.rect;
+          const node = createTextNode(rect);
           const toSide = oppositeSide(gesture.fromSide);
           const edge: CanvasEdge = {
             id: makeId(),
@@ -655,7 +694,11 @@ export default function CanvasClient() {
             toNode: node.id,
             toSide,
           };
-          applyDoc({ nodes: [...current.nodes, node], edges: [...current.edges, edge] });
+          applyDoc({
+            ...current,
+            nodes: [...current.nodes, node],
+            edges: [...current.edges, edge],
+          });
           beginEditing(node);
           return;
         }
@@ -689,7 +732,7 @@ export default function CanvasClient() {
             (e) =>
               !removedEdgeIds.has(e.id) && !nodeIds.has(e.fromNode) && !nodeIds.has(e.toNode),
           );
-          applyDoc({ nodes, edges });
+          applyDoc({ ...current, nodes, edges });
           setSelectedIds((ids) => ids.filter((id) => !nodeIds.has(id)));
           const parts: string[] = [];
           if (nodeIds.size) parts.push(`${nodeIds.size} card${nodeIds.size > 1 ? "s" : ""}`);
@@ -1518,6 +1561,7 @@ export default function CanvasClient() {
     if (ids.size === 0) return;
     const current = docRef.current;
     applyDoc({
+      ...current,
       nodes: current.nodes.filter((n) => !ids.has(n.id)),
       edges: current.edges.filter((e) => !ids.has(e.fromNode) && !ids.has(e.toNode)),
     });

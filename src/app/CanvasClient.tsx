@@ -115,6 +115,12 @@ const CARD_PADDING_X = 12;
 const CARD_PADDING_Y = 10;
 const CARD_BORDER = 1.5;
 
+/** The card's own type. Mirrored in `.nodeText` and `.nodeEditor`, and used by
+ *  measureTextHeight — weight changes how text wraps, so it belongs here too. */
+const CARD_FONT_SIZE = 18;
+const CARD_FONT_WEIGHT = 600;
+const CARD_LINE_HEIGHT = 1.3;
+
 /** Nothing may be resized smaller than this and stay usable. */
 const MIN_CARD = { width: 90, height: 48 };
 
@@ -3020,6 +3026,7 @@ export default function CanvasClient() {
                   <textarea
                     ref={textareaRef}
                     className={styles.nodeEditor}
+                    style={picture ? undefined : { height: editorHeight(editingText, node) }}
                     value={editingText}
                     onChange={(e) => setEditingText(e.target.value)}
                     onBlur={commitEditing}
@@ -3974,8 +3981,9 @@ function measureTextHeight(text: string, width: number): number {
       visibility: "hidden",
       whiteSpace: "pre-wrap",
       overflowWrap: "anywhere",
-      fontSize: "15px",
-      lineHeight: "1.35",
+      fontSize: `${CARD_FONT_SIZE}px`,
+      fontWeight: `${CARD_FONT_WEIGHT}`,
+      lineHeight: `${CARD_LINE_HEIGHT}`,
       fontFamily: getComputedStyle(document.body).fontFamily,
     });
     document.body.appendChild(measureEl);
@@ -3986,6 +3994,23 @@ function measureTextHeight(text: string, width: number): number {
   // would not produce.
   measureEl.textContent = text.length ? text : " ";
   return measureEl.offsetHeight + CARD_PADDING_Y * 2 + CARD_BORDER * 2;
+}
+
+/**
+ * How tall the editing box should be: the height of the words in it, capped by
+ * the card.
+ *
+ * A textarea cannot centre its own content vertically, and one stretched to
+ * fill the card puts its first line at the top — so opening a card for text
+ * would jog the words upward and closing it would drop them back. Sizing the
+ * box to its content instead lets the card's own centring place it, and the
+ * words do not move.
+ */
+function editorHeight(text: string, node: CanvasNode): number {
+  const chrome = CARD_PADDING_Y * 2 + CARD_BORDER * 2;
+  const line = CARD_FONT_SIZE * CARD_LINE_HEIGHT;
+  const room = Math.max(line, node.height - chrome);
+  return Math.max(line, Math.min(room, measureTextHeight(text, node.width) - chrome));
 }
 
 /** "3 minutes ago" — enough to tell two maps apart at a glance. */

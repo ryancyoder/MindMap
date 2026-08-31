@@ -62,6 +62,43 @@ const mapNames = () =>
 // ── auto-fit ───────────────────────────────────────────────────────────────
 
 await drawCard(400, 420, 42);
+
+// A card says one thing, so it says it in the middle — and the box you type
+// into has to sit exactly where the words will sit, or opening a card jogs
+// them upward and closing it drops them back. A textarea cannot centre its own
+// contents, so it is sized to them and the card's own centring places it.
+await page.keyboard.type("Centred");
+await page.waitForTimeout(250);
+check(
+  "the text and the box you type it into are both centred on the card",
+  await page.evaluate(() => {
+    const card = document.querySelector("[data-node-id]").getBoundingClientRect();
+    const box = document.querySelector("textarea").getBoundingClientRect();
+    return {
+      vertical: Math.abs(box.top + box.height / 2 - (card.top + card.height / 2)) < 2,
+      shorterThanTheCard: box.height < card.height - 20,
+      centred: getComputedStyle(document.querySelector("textarea")).textAlign,
+    };
+  }),
+  { vertical: true, shorterThanTheCard: true, centred: "center" },
+);
+await page.keyboard.press("Escape");
+await page.waitForTimeout(300);
+check(
+  "and the words do not move when the box goes away",
+  await page.evaluate(() => {
+    const card = document.querySelector("[data-node-id]").getBoundingClientRect();
+    const text = document.querySelector('[class*="nodeText"]').getBoundingClientRect();
+    return Math.abs(text.top + text.height / 2 - (card.top + card.height / 2)) < 2;
+  }),
+  true,
+);
+
+await page.locator("[data-node-id]").first().click();
+await page.waitForTimeout(200);
+await page.getByRole("button", { name: "Edit", exact: true }).click();
+await page.waitForTimeout(250);
+await page.keyboard.press("Control+a");
 const before = await cardBox();
 await page.keyboard.type(
   "A deliberately long thought that will not fit on one line inside a card this size, and must not be clipped away where it cannot be read.",

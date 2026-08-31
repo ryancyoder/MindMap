@@ -309,9 +309,21 @@ card you deliberately enlarged stays enlarged. Height comes from
 `measureTextHeight`, which lays the text out in a real off-screen element
 rather than estimating, because wrapping depends on the actual font.
 
-`CARD_PADDING_X/Y` and `CARD_BORDER` mirror `canvas.module.css`. **If you change
-the card's padding or border in CSS, change them here too** — they were 3px
-apart once and that was enough to clip a whole wrapped line on a narrow card.
+`CARD_PADDING_X/Y`, `CARD_BORDER`, `CARD_FONT_SIZE`, `CARD_FONT_WEIGHT` and
+`CARD_LINE_HEIGHT` mirror `canvas.module.css`. **If you change the card's
+padding, border or type in CSS, change them here too** — padding was 3px out
+once and that was enough to clip a whole wrapped line on a narrow card, and
+weight moves where the words wrap as surely as size does.
+
+**A card says one thing, so it says it in the middle**, on both axes: the node
+is a flex row that centres its one child, and `.nodeText` centres the words
+within it. The box you type into is sized to its own contents rather than
+stretched to fill the card, because a textarea cannot centre its contents
+vertically and one that fills the card puts its first line at the top — so
+opening a card would jog the words upward and closing it would drop them back.
+`editorHeight` measures the words and the card's centring does the rest. A card
+with a picture is the exception: its words are a caption above the photograph,
+ranged left.
 
 ## Writing on a card
 
